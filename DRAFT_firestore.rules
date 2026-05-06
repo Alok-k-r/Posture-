@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Helpers
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    
+    // Device Data Validation
+    function isValidDevice(data) {
+      return data.keys().hasAll(['angle', 'lastUpdated']) 
+             && data.angle is number 
+             && data.angle >= -180 && data.angle <= 180
+             && data.lastUpdated == request.time;
+    }
+
+    // Appointment Validation
+    function isValidAppointment(data) {
+      return data.keys().hasAll(['doctorName', 'specialty', 'date', 'time', 'status', 'fee'])
+             && data.doctorName is string && data.doctorName.size() <= 100
+             && data.status in ['confirmed', 'pending', 'cancelled'];
+    }
+
+    // Thresholds Validation
+    function isValidThresholds(data) {
+      return data.keys().hasAll(['good', 'warn', 'bad'])
+             && data.good is number && data.warn is number && data.bad is number
+             && data.good > data.warn && data.warn > data.bad;
+    }
+
+    // 1. DEVICES (ESP32 bridge)
+    match /devices/{deviceId} {
+      allow read: if isSignedIn(); // In a real app, check if user owns this device
+      allow create, update: if isValidId(deviceId) && isValidDevice(incoming());
+    }
+
+    // 2. USERS
+    match /users/{userId} {
+      // Appointments
+      match /appointments/{appointmentId} {
+        allow list: if isOwner(userId) && resource.data.id != null;
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidAppointment(incoming());
+        allow update: if isOwner(userId) && isValidAppointment(incoming()) 
+                      && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'date', 'time']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Settings/Thresholds
+      match /settings/thresholds {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId) && isValidThresholds(incoming());
+      }
+    }
+  }
+}

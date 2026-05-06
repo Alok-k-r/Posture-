@@ -1,0 +1,51 @@
+{
+  "entities": {
+    "UserDevice": {
+      "title": "User Device Data",
+      "description": "Real-time posture data received from ESP32",
+      "type": "object",
+      "properties": {
+        "angle": { "type": "number", "description": "Current posture angle in degrees" },
+        "score": { "type": "number", "description": "Calculated posture score 0-100" },
+        "lastUpdated": { "type": "string", "format": "date-time", "description": "Server timestamp of last reading" },
+        "deviceId": { "type": "string", "description": "Unique identifier for the ESP32 hardware" }
+      },
+      "required": ["angle", "lastUpdated"]
+    },
+    "Appointment": {
+      "title": "Medical Appointment",
+      "description": "Scheduled visit with a healthcare provider",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "doctorName": { "type": "string" },
+        "specialty": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "status": { "type": "string", "enum": ["confirmed", "pending", "cancelled"] },
+        "fee": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/devices/{deviceId}": {
+      "schema": "UserDevice",
+      "description": "Public (or restricted) endpoint for ESP32 devices to push posture data"
+    },
+    "/users/{userId}/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "User specific appointment records"
+    },
+    "/users/{userId}/settings/thresholds": {
+        "schema": {
+            "type": "object",
+            "properties": {
+                "good": { "type": "number" },
+                "warn": { "type": "number" },
+                "bad": { "type": "number" }
+            }
+        },
+        "description": "User posture thresholds"
+    }
+  }
+}

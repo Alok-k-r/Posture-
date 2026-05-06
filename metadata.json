@@ -1,0 +1,6 @@
+{
+  "name": "PostureCare — Smart Healthcare",
+  "description": "Smart Healthcare & Posture Monitoring Dashboard mobile-first web app.",
+  "requestFramePermissions": ["camera", "notifications"],
+  "majorCapabilities": []
+}

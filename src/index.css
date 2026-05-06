@@ -1,0 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Primary greens */
+  --color-green: #22C55E;
+  --color-green-light: #86EFAC;
+  --color-green-dark: #16A34A;
+  --color-green-50: #DCFCE7;
+  --color-green-100: #BBF7D0;
+  --color-green-pale: #F0FDF4;
+
+  /* Status colors */
+  --color-orange: #F97316;
+  --color-orange-light: #FFF7ED;
+  --color-red: #EF4444;
+  --color-red-light: #FEF2F2;
+  --color-blue: #3B82F6;
+  --color-blue-light: #EFF6FF;
+  --color-purple: #8B5CF6;
+  --color-yellow: #F59E0B;
+
+  /* UI colors */
+  --color-bg: #F8FAFC;
+  --color-card: #ffffff;
+  --color-text: #0F172A;
+  --color-text-muted: #64748B;
+  --color-border: #E2E8F0;
+  --color-border-light: #F1F5F9;
+
+  /* Accent */
+  --color-premium-indigo: #4F46E5;
+  --color-premium-slate: #1E293B;
+
+  /* Bento Colors */
+  --color-bento-blue-bg: #f0f9ff;
+  --color-bento-blue-border: #e0f2fe;
+  --color-bento-blue-text: #0284c7;
+  
+  --color-bento-rose-bg: #fff1f2;
+  --color-bento-rose-border: #ffe4e6;
+  --color-bento-rose-text: #e11d48;
+
+  --color-bento-violet-bg: #f5f3ff;
+  --color-bento-violet-border: #ede9fe;
+  --color-bento-violet-text: #7c3aed;
+
+  --color-bento-green-bg: #f0fdf4;
+  --color-bento-green-border: #dcfce7;
+  --color-bento-green-text: #16a34a;
+
+  --color-zinc-900: #18181b;
+  --color-zinc-800: #27272a;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-text antialiased;
+    font-feature-settings: "ss01", "ss02", "cv01", "cv02";
+    letter-spacing: -0.01em;
+    background-image: 
+      radial-gradient(at 0% 0%, hsla(222,47%,95%,1) 0, transparent 50%), 
+      radial-gradient(at 50% 0%, hsla(210,100%,98%,1) 0, transparent 50%), 
+      radial-gradient(at 100% 0%, hsla(222,47%,95%,1) 0, transparent 50%);
+  }
+}
+
+/* Custom shadow classes */
+@layer utilities {
+  .shadow-soft {
+    @apply shadow-[0_4px_6px_-1px_rgba(0,0,0,0.05),0_2px_4px_-2px_rgba(0,0,0,0.05)];
+  }
+  .shadow-premium {
+    @apply shadow-[0_20px_25px_-5px_rgba(0,0,0,0.1),0_8px_10px_-6px_rgba(0,0,0,0.1)];
+  }
+  .glass {
+    @apply bg-white/70 backdrop-blur-2xl border border-white/40;
+  }
+  .bento-card {
+    @apply bg-white/80 backdrop-blur-md rounded-[32px] border border-border/50 p-5 transition-all duration-300 hover:border-border;
+  }
+}
+
+/* Hide scrollbars for a cleaner mobile feel */
+::-webkit-scrollbar {
+  display: none;
+}
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
