@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, setThresholds, recalibrateBaseline } from '../store/store';
+import { RootState, setThresholds, recalibrateBaseline, addToSyncQueue } from '../store/store';
 import { Star, AlertTriangle, XCircle, Save, RotateCcw, Info, Bell, Zap, Sliders, Target } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -10,6 +10,7 @@ export const ThresholdScreen: React.FC = () => {
   const currentThresholds = useSelector((state: RootState) => state.posture.thresholds);
   const baselineAngle = useSelector((state: RootState) => state.posture.baselineAngle);
   const currentAngle = useSelector((state: RootState) => state.posture.angle);
+  const isOnline = useSelector((state: RootState) => state.sync.isOnline);
 
   const [local, setLocal] = useState(currentThresholds);
   const [showSuccess, setShowSuccess] = useState(false);
@@ -17,6 +18,15 @@ export const ThresholdScreen: React.FC = () => {
 
   const handleSave = () => {
     dispatch(setThresholds(local));
+    
+    // Sync to cloud
+    dispatch(addToSyncQueue({
+      id: `thresh_${Date.now()}`,
+      type: 'SYNC_THRESHOLDS',
+      payload: local,
+      timestamp: new Date().toISOString()
+    }));
+
     setShowSuccess(true);
     setTimeout(() => setShowSuccess(false), 3000);
   };
@@ -41,7 +51,13 @@ export const ThresholdScreen: React.FC = () => {
       bad: 50,
       alertAngle: 15,
       alertDelay: 5,
-      vibrationIntensity: 70
+      vibrationIntensity: 70,
+      vibrationEnabled: true,
+      slouchWarningTime: 10,
+      slouchStrongTime: 30,
+      snoozeDuration: 20,
+      stopDuration: 600,
+      reminderMessage: "Spine Alignment Alert! Please sit up straight, roll your shoulders back, and protect your back."
     });
   };
 
@@ -121,6 +137,135 @@ export const ThresholdScreen: React.FC = () => {
             onChange={(e) => setLocal({ ...local, vibrationIntensity: Number(e.target.value) })}
             className="w-full h-2 bg-slate-100 rounded-full appearance-none cursor-pointer accent-amber-500 shadow-inner" 
           />
+        </div>
+      </div>
+
+      {/* Real-time Slouch Alarm Customization */}
+      <div className="glass p-8 rounded-[48px] shadow-premium space-y-8">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <Zap size={20} className="text-rose-500" />
+            <h3 className="text-base font-black text-slate-800 tracking-tight">Vibration Slouch Alarm</h3>
+          </div>
+          <button
+            onClick={() => setLocal({ ...local, vibrationEnabled: !local.vibrationEnabled })}
+            className={cn(
+              "p-1.5 px-3 rounded-full text-[9px] font-black uppercase tracking-wider transition-all",
+              local.vibrationEnabled 
+                ? "bg-emerald-100 text-emerald-700 border border-emerald-200" 
+                : "bg-slate-100 text-slate-400 border border-slate-200"
+            )}
+          >
+            {local.vibrationEnabled ? "Active" : "Muted"}
+          </button>
+        </div>
+
+        <div className="space-y-6">
+          {/* Custom Reminder Message */}
+          <div className="space-y-2.5">
+            <label className="text-[11px] font-black text-slate-700 uppercase tracking-wider block px-1">
+              Custom Reminder Message
+            </label>
+            <p className="text-[9px] text-slate-400 font-bold px-1 mb-2">Message displayed on the full-screen alarm page</p>
+            <textarea
+              rows={2}
+              value={local.reminderMessage || ''}
+              onChange={(e) => setLocal({ ...local, reminderMessage: e.target.value })}
+              placeholder="E.g., Spine Alignment Alert! Please sit up straight."
+              className="w-full text-xs font-medium text-slate-700 p-4 rounded-2xl bg-slate-50 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-500 placeholder:text-slate-300 resize-none shadow-inner"
+            />
+          </div>
+          {/* Slouch Warning Threshold Seconds */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center px-1">
+              <div>
+                <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider">Slouch Trigger Delay (Slight Vibe)</span>
+                <p className="text-[9px] text-slate-400 font-bold mt-1">First alert delay for brief slump period</p>
+              </div>
+              <span className="text-sm font-black text-slate-800">{local.slouchWarningTime}s</span>
+            </div>
+            <input 
+              type="range" min="3" max="60" value={local.slouchWarningTime} 
+              onChange={(e) => setLocal({ ...local, slouchWarningTime: Number(e.target.value) })}
+              className="w-full h-2 bg-slate-100 rounded-full appearance-none cursor-pointer accent-indigo-600 shadow-inner" 
+            />
+          </div>
+
+          {/* Slouch Strong Alert Threshold Seconds */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center px-1">
+              <div>
+                <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider">Slouch Ignore Delay (Strong Vibe)</span>
+                <p className="text-[9px] text-slate-400 font-bold mt-1">Escalates vibration strength when ignored</p>
+              </div>
+              <span className="text-sm font-black text-rose-500">{local.slouchStrongTime}s</span>
+            </div>
+            <input 
+              type="range" min="15" max="120" value={local.slouchStrongTime} 
+              onChange={(e) => setLocal({ ...local, slouchStrongTime: Number(e.target.value) })}
+              className="w-full h-2 bg-slate-100 rounded-full appearance-none cursor-pointer accent-rose-500 shadow-inner" 
+            />
+          </div>
+
+          {/* Snooze Duration */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center px-1">
+              <div>
+                <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider">Snooze Duration</span>
+                <p className="text-[9px] text-slate-400 font-bold mt-1">Subdues slight vibration while slouching</p>
+              </div>
+              <span className="text-sm font-black text-indigo-600">{local.snoozeDuration}s</span>
+            </div>
+            <input 
+              type="range" min="5" max="120" value={local.snoozeDuration} 
+              onChange={(e) => setLocal({ ...local, snoozeDuration: Number(e.target.value) })}
+              className="w-full h-2 bg-slate-100 rounded-full appearance-none cursor-pointer accent-indigo-600 shadow-inner" 
+            />
+          </div>
+
+          {/* Stop Silence Duration */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center px-1">
+              <div>
+                <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider">Silence Duration (Stop Button)</span>
+                <p className="text-[9px] text-slate-400 font-bold mt-1">Completely suspends alerts after tapping Stop</p>
+              </div>
+              <span className="text-sm font-black text-indigo-600">{Math.round(local.stopDuration / 60)} mins</span>
+            </div>
+            <input 
+              type="range" min="1" max="60" value={Math.round(local.stopDuration / 60)} 
+              onChange={(e) => setLocal({ ...local, stopDuration: Number(e.target.value) * 60 })}
+              className="w-full h-2 bg-slate-100 rounded-full appearance-none cursor-pointer accent-indigo-600 shadow-inner" 
+            />
+          </div>
+
+          {/* Vibration Tester Zone */}
+          <div className="bg-slate-50 p-5 rounded-[32px] space-y-4 border border-slate-100">
+            <div className="text-center">
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-[0.15em]">Tactile Alignment Testing</span>
+              <p className="text-[8px] text-slate-400 font-medium mt-1">Tap below to test different phone vibration patterns</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                type="button"
+                onClick={() => {
+                  if ('vibrate' in navigator) navigator.vibrate([150]);
+                }}
+                className="p-3.5 rounded-2xl bg-white hover:bg-slate-100 border border-slate-200/60 shadow-soft text-[9px] font-black uppercase tracking-wider text-slate-700 active:scale-95 transition-all text-center"
+              >
+                📳 Slight Vibration
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  if ('vibrate' in navigator) navigator.vibrate([400, 150, 400]);
+                }}
+                className="p-3.5 rounded-2xl bg-white hover:bg-slate-100 border border-slate-200/60 shadow-soft text-[9px] font-black uppercase tracking-wider text-rose-500 active:scale-95 transition-all text-center"
+              >
+                📳 Strong Vibration
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

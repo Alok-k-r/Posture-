@@ -4,14 +4,16 @@
  */
 
 import React, { useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
+import { Toaster } from 'react-hot-toast';
 import { store, persistor, RootState, setAuthLoading, login, logout } from './store/store';
 import { auth } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { Layout } from './components/layout/Layout';
 import { SyncManager } from './components/sync/SyncManager';
+import { SlouchAlarmManager } from './components/posture/SlouchAlarmManager';
 import { LoginScreen } from './screens/LoginScreen';
 import { DashboardScreen } from './screens/DashboardScreen';
 import { PostureScreen } from './screens/PostureScreen';
@@ -54,7 +56,9 @@ function AppContent() {
 
   return (
     <Router>
+      <Toaster position="top-center" />
       <SyncManager />
+      <SlouchAlarmManager />
       <Layout>
         <Routes>
           <Route path="/login" element={<LoginScreen />} />

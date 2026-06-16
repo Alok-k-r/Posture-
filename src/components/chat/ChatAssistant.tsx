@@ -156,7 +156,7 @@ export const ChatAssistant: React.FC = () => {
             {/* Messages Area */}
             <div 
               ref={scrollRef}
-              className="flex-1 overflow-y-auto p-4 space-y-4 bg-bg/30"
+              className="flex-1 overflow-y-auto p-4 space-y-4 bg-bg/30 flex flex-col"
             >
               {messages.map((msg) => (
                 <div
@@ -170,7 +170,7 @@ export const ChatAssistant: React.FC = () => {
                     "w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold",
                     msg.isAi ? "bg-green/10 text-green" : "bg-green text-white"
                   )}>
-                    {msg.isAi ? <Bot size={16} /> : (user?.photo ? <img src={user.photo} className="w-full h-full rounded-full" /> : user?.name[0])}
+                    {msg.isAi ? <Bot size={16} /> : (user?.photo ? <img src={user.photo} className="w-full h-full rounded-full" /> : (user?.name?.[0] || 'U'))}
                   </div>
                   <div className={cn(
                     "px-4 py-2.5 rounded-2xl text-sm shadow-sm",

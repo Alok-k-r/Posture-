@@ -19,16 +19,12 @@ export const LoginScreen: React.FC = () => {
     setIsLoading(true);
     
     try {
-      // Try to sign in anonymously. If it fails (usually disabled in console), 
+      // Try to sign in anonymously. If it fails (due to network or console settings), 
       // we still log the user in locally for the demo.
       try {
         await signInAnonymously(auth);
       } catch (err: any) {
-        if (err.code === 'auth/admin-restricted-operation') {
-          console.warn('Anonymous Auth is disabled in Firebase Console. Local demo mode active.');
-        } else {
-          throw err;
-        }
+        console.warn('Firebase Anonymous Auth failed or was bypassed:', err?.message || err);
       }
       
       dispatch(login({

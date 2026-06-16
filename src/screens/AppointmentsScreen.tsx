@@ -21,11 +21,53 @@ export const AppointmentsScreen: React.FC = () => {
   
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'All' | 'Pending' | 'Upcoming' | 'History'>('All');
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [time, setTime] = useState('10:00');
+
+  // Swipe gesture tracking states
+  const [startY, setStartY] = useState<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setStartY(e.touches[0].clientY);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (startY === null) return;
+    const currentY = e.touches[0].clientY;
+    const diffY = startY - currentY; // positive indicates swipe up
+    
+    if (diffY > 50) {
+      setIsFullScreen(true);
+      setStartY(null);
+    } else if (diffY < -50) {
+      if (isFullScreen) {
+        setIsFullScreen(false);
+      } else {
+        setShowModal(false);
+      }
+      setStartY(null);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    setStartY(null);
+  };
+
+  // Safe navigation-bar hiding effect on modal mount
+  React.useEffect(() => {
+    if (showModal) {
+      document.body.classList.add('modal-open-hide-tabbar');
+    } else {
+      document.body.classList.remove('modal-open-hide-tabbar');
+    }
+    return () => {
+      document.body.classList.remove('modal-open-hide-tabbar');
+    };
+  }, [showModal]);
 
   const filteredDocs = useMemo(() => {
     if (!query.trim()) return [];
@@ -52,15 +94,13 @@ export const AppointmentsScreen: React.FC = () => {
     dispatch(addAppointment(newAppointment));
     setActiveTab('Pending');
 
-    // If offline, queue it for backend sync
-    if (!isOnline) {
-      dispatch(addToSyncQueue({
-        id: newAppointment.id,
-        type: 'ADD_APPOINTMENT',
-        payload: newAppointment,
-        timestamp: new Date().toISOString()
-      }));
-    }
+    // Always queue for sync to keep cloud in sync with local
+    dispatch(addToSyncQueue({
+      id: `add_${newAppointment.id}`,
+      type: 'SYNC_APPOINTMENT',
+      payload: newAppointment,
+      timestamp: new Date().toISOString()
+    }));
 
     setShowModal(false);
     setSelectedDoc(null);
@@ -76,7 +116,7 @@ export const AppointmentsScreen: React.FC = () => {
           <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mt-2">Clinical Management</p>
         </div>
         <button 
-          onClick={() => setShowModal(true)}
+          onClick={() => { setIsFullScreen(false); setShowModal(true); }}
           className="w-12 h-12 rounded-2xl bg-slate-900 shadow-premium flex items-center justify-center text-white active:scale-90 transition-all"
         >
           <Plus size={24} />
@@ -114,7 +154,7 @@ export const AppointmentsScreen: React.FC = () => {
       {/* List */}
       <div className="space-y-5 mt-4">
         <AnimatePresence mode="popLayout">
-          {appointments
+          {[...appointments]
             .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
             .filter(a => {
               const matchesSearch = a.doctorName.toLowerCase().includes(search.toLowerCase());
@@ -176,7 +216,15 @@ export const AppointmentsScreen: React.FC = () => {
                       {app.status === 'pending' && (
                         <div className="flex flex-col items-center gap-1">
                           <button 
-                            onClick={() => dispatch(setAppointmentStatus({ id: app.id, status: 'upcoming' }))}
+                            onClick={() => {
+                              dispatch(setAppointmentStatus({ id: app.id, status: 'upcoming' }));
+                              dispatch(addToSyncQueue({
+                                id: `status_${app.id}_${Date.now()}`,
+                                type: 'SYNC_APPOINTMENT',
+                                payload: { ...app, status: 'upcoming' },
+                                timestamp: new Date().toISOString()
+                              }));
+                            }}
                             className="px-4 py-2 rounded-xl bg-emerald-500 text-white text-[10px] font-black uppercase tracking-widest shadow-lg shadow-emerald-200 active:scale-95 transition-all"
                           >
                             Approve
@@ -186,7 +234,15 @@ export const AppointmentsScreen: React.FC = () => {
                       )}
                       {app.status === 'upcoming' && (
                         <button 
-                          onClick={() => dispatch(setAppointmentStatus({ id: app.id, status: 'completed' }))}
+                          onClick={() => {
+                            dispatch(setAppointmentStatus({ id: app.id, status: 'completed' }));
+                            dispatch(addToSyncQueue({
+                              id: `status_${app.id}_${Date.now()}`,
+                              type: 'SYNC_APPOINTMENT',
+                              payload: { ...app, status: 'completed' },
+                              timestamp: new Date().toISOString()
+                            }));
+                          }}
                           className="px-4 py-2 rounded-xl bg-slate-800 text-white text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"
                         >
                           Complete
@@ -194,7 +250,15 @@ export const AppointmentsScreen: React.FC = () => {
                       )}
                       {(app.status === 'pending' || app.status === 'upcoming') && (
                         <button 
-                          onClick={() => dispatch(removeAppointment(app.id))}
+                          onClick={() => {
+                            dispatch(removeAppointment(app.id));
+                            dispatch(addToSyncQueue({
+                              id: `delete_${app.id}_${Date.now()}`,
+                              type: 'DELETE_APPOINTMENT',
+                              payload: { id: app.id },
+                              timestamp: new Date().toISOString()
+                            }));
+                          }}
                           className="w-10 h-10 rounded-xl bg-rose-50 flex items-center justify-center text-rose-500 hover:bg-rose-100 transition-colors"
                         >
                           <X size={18} />
@@ -217,7 +281,7 @@ export const AppointmentsScreen: React.FC = () => {
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest max-w-[200px] mx-auto leading-relaxed">Connect with top specialists to maintain your spinal health.</p>
             </div>
             <button 
-              onClick={() => setShowModal(true)}
+              onClick={() => { setIsFullScreen(false); setShowModal(true); }}
               className="bg-white border-2 border-slate-100 text-slate-800 px-8 py-4 rounded-[24px] text-[10px] font-black uppercase tracking-widest shadow-soft active:scale-95 transition-all"
             >
               Book First Appointment
@@ -239,16 +303,50 @@ export const AppointmentsScreen: React.FC = () => {
             />
             <motion.div
               initial={{ y: '100%' }}
-              animate={{ y: 0 }}
+              animate={{ 
+                y: 0,
+                height: isFullScreen ? '100dvh' : 'auto'
+              }}
               exit={{ y: '100%' }}
-              className="relative w-full max-w-lg bg-white rounded-t-[40px] sm:rounded-[40px] shadow-2xl p-8 pb-10 flex flex-col gap-6"
+              className={cn(
+                "relative w-full max-w-lg bg-white rounded-t-[40px] sm:rounded-[40px] shadow-2xl flex flex-col transition-all duration-300 ease-out z-[110]",
+                isFullScreen 
+                  ? "h-[100dvh] rounded-none p-6 pt-3 pb-8" 
+                  : "p-8 pt-4 pb-10 max-h-[85vh] h-auto gap-5"
+              )}
             >
-              <div className="flex justify-between items-center">
-                <h3 className="text-xl font-black">Schedule Visit</h3>
-                <button onClick={() => setShowModal(false)} className="p-2 bg-bg rounded-full"><X size={20} /></button>
+              {/* Swipe Handle Indicator */}
+              <div 
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+                onClick={() => setIsFullScreen(!isFullScreen)}
+                className="w-full py-2 flex flex-col items-center justify-center cursor-row-resize select-none"
+              >
+                <div className="w-16 h-1.5 bg-slate-200 rounded-full hover:bg-slate-300 active:bg-slate-400 transition-colors" />
+                <span className="text-[7.5px] font-black tracking-widest text-slate-400 uppercase mt-1">
+                  {isFullScreen ? 'Swipe/Tap down to shrink' : 'Swipe/Tap up for full screen'}
+                </span>
               </div>
 
-              <div className="space-y-4">
+              <div className="flex justify-between items-center pb-2 border-b border-slate-50">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xl font-extrabold tracking-tight text-slate-800">Schedule Visit</h3>
+                  {isFullScreen && (
+                    <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 font-bold uppercase tracking-wider text-[8px] rounded border border-emerald-100">
+                      Full Screen
+                    </span>
+                  )}
+                </div>
+                <button 
+                  onClick={() => setShowModal(false)} 
+                  className="p-2.5 bg-slate-50 hover:bg-slate-100 rounded-full transition-colors"
+                >
+                  <X size={18} className="text-slate-600" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto py-2 -mx-2 px-2 space-y-5 no-scrollbar">
                 {/* Doctor Search */}
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-textMuted uppercase ml-2">Select Specialist</label>
@@ -349,13 +447,15 @@ export const AppointmentsScreen: React.FC = () => {
                 </div>
               </div>
 
-              <button
-                disabled={!selectedDoc}
-                onClick={handleAdd}
-                className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-[11px] uppercase tracking-[0.2em] shadow-premium active:scale-95 transition-all disabled:opacity-50 disabled:grayscale mb-2"
-              >
-                Complete Booking
-              </button>
+              <div className="pt-2 border-t border-slate-50">
+                <button
+                  disabled={!selectedDoc}
+                  onClick={handleAdd}
+                  className="w-full bg-slate-900 text-white py-5 rounded-[28px] font-black text-[11px] uppercase tracking-[0.2em] shadow-premium active:scale-95 transition-all disabled:opacity-50 disabled:grayscale mb-2"
+                >
+                  Complete Booking
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

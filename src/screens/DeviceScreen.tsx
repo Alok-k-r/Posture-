@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, unpairDevice } from '../store/store';
+import { RootState, unpairDevice, setDeviceStatus } from '../store/store';
 import { Wifi, Battery, Cpu, ShieldCheck, Trash2, Smartphone, AlertCircle, RefreshCw, ChevronLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';

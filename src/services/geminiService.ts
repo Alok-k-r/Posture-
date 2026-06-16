@@ -1,11 +1,30 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
+let aiClient: GoogleGenAI | null = null;
+
+const getAI = () => {
+  if (!aiClient) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      throw new Error("GEMINI_API_KEY is not defined. Please configure it in the Secrets settings.");
+    }
+    aiClient = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+  }
+  return aiClient;
+};
 
 export const analyzePosture = async (angle: number, history: number[]) => {
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-flash-lite",
       contents: `The patient's current posture angle is ${angle.toFixed(1)} degrees. 
 History of last 10 readings: ${history.slice(0, 10).map(n => n.toFixed(1)).join(', ')}.
 Provide a crisp, 1-sentence medical insight for spinal alignment.`,
@@ -23,8 +42,9 @@ Provide a crisp, 1-sentence medical insight for spinal alignment.`,
 
 export const generatePostureSummary = async (history: number[], score: number) => {
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-flash-lite",
       contents: `Give me a friendly and simple summary of how I sat today.
 Data for you:
 - My Score: ${score}%
@@ -51,8 +71,9 @@ Keep the language warm, simple, and very easy to understand. No medical jargon.`
 
 export const chatWithAssistant = async (message: string, context: any) => {
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-flash-lite",
       contents: `User message: ${message}
 Current Context: ${JSON.stringify(context)}
 Provide a crisp, clear, and professional medical answer. If providing a summary, use bullet points. Otherwise, keep it short.`,

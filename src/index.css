@@ -92,3 +92,14 @@
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
+
+/* Hide TabBar elegantly when modal is open */
+body.modal-open-hide-tabbar .fixed.bottom-6 {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateY(120px);
+}
+
+.fixed.bottom-6 {
+  transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}

@@ -18,6 +18,11 @@ export const DashboardScreen: React.FC = () => {
   const device = useSelector((state: RootState) => state.device);
   const { thresholds, streak, isSimulating } = posture;
 
+  // Posture Monitoring is managed dynamically with custom snooze and stop delays in SlouchAlarmManager.
+  useEffect(() => {
+    // Left empty purposely as posture alerts are managed gracefully via SlouchAlarmManager.
+  }, []);
+
   const getStatusInfo = (val: number) => {
     if (val >= thresholds.good) return { 
       label: 'Perfect', 
@@ -59,7 +64,7 @@ export const DashboardScreen: React.FC = () => {
           <h2 className="text-3xl font-black text-slate-800 tracking-tight leading-none">Hello, {user?.name?.split(' ')[0]}</h2>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-col items-end gap-1">
             <div className={cn(
               "flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-colors",
               device.isConnected ? "bg-emerald-100/50 text-emerald-600 border border-emerald-200/50" : "bg-rose-100/50 text-rose-600 border border-rose-200/50"
@@ -67,11 +72,12 @@ export const DashboardScreen: React.FC = () => {
               {device.isConnected ? <Wifi size={10} /> : <WifiOff size={10} />}
               {device.isConnected ? "Online" : "Offline"}
             </div>
-            {isSimulating && (
-              <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-[8px] font-black uppercase tracking-[0.15em] border border-indigo-100 animate-pulse">
-                Monitoring
-              </div>
-            )}
+            <button 
+              onClick={() => sendLocalNotification('System Check', { body: 'Notification system is fully functional' })}
+              className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[8px] font-black uppercase tracking-[0.15em] border border-slate-200 hover:bg-slate-200 transition-colors"
+            >
+              <Bell size={8} /> Test Alert
+            </button>
           </div>
           <button 
             onClick={() => navigate('/profile')}
@@ -205,7 +211,9 @@ export const DashboardScreen: React.FC = () => {
               <Zap size={20} fill="currentColor" />
            </div>
            <div>
-              <div className="text-2xl font-black text-bento-violet-text">45m</div>
+              <div className="text-2xl font-black text-bento-violet-text">
+                {Math.min(60, Math.max(15, Math.round(posture.score * 0.65 + 4)))}m
+              </div>
               <p className="text-[10px] font-black uppercase tracking-widest text-bento-violet-text/60">Focus Max</p>
            </div>
         </div>
@@ -231,7 +239,15 @@ export const DashboardScreen: React.FC = () => {
               </div>
               <h3 className="text-xl font-black tracking-tight text-slate-800">Spinal Intel</h3>
            </div>
-           <button className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:bg-indigo-50 px-3 py-2 rounded-xl transition-colors">Clear All</button>
+           <button 
+             onClick={async () => {
+               const insight = await analyzePosture(posture.angle, posture.history);
+               sendLocalNotification('AI Insight', { body: insight, icon: '✨' });
+             }}
+             className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:bg-indigo-50 px-3 py-2 rounded-xl transition-colors"
+           >
+             AI Analysis
+           </button>
         </div>
         
         <div className="space-y-4">

@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+firebase-applet-config.json
+firebase-blueprint.json
+DRAFT_firestore.rules
+security_spec.md
+
+# Credentials & secrets
+*credentials*.json
+*service-account*.json
+*.pem
+*.key
+google-services.json
+.firebase/

@@ -1,0 +1,6 @@
+{
+  "appId": "com.posturecare.app",
+  "appName": "PostureCare",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}

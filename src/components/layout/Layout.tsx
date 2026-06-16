@@ -13,7 +13,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const showNav = isAuth && location.pathname !== '/login';
 
   return (
-    <div className="min-h-screen bg-bg flex flex-col font-sans pb-24">
+    <div className="min-h-screen bg-bg flex flex-col font-sans pb-40">
       <main className="flex-1 overflow-x-hidden">
         {children}
       </main>

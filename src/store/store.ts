@@ -81,6 +81,12 @@ interface PostureState {
     alertAngle: number;
     alertDelay: number; // in seconds
     vibrationIntensity: number; // 0-100
+    vibrationEnabled: boolean;
+    slouchWarningTime: number; // default 10 seconds
+    slouchStrongTime: number; // default 30 seconds
+    snoozeDuration: number; // default 20 seconds
+    stopDuration: number; // default 600 seconds
+    reminderMessage: string;
   };
   baselineAngle: number;
   streak: { current: number; longest: number };
@@ -99,7 +105,13 @@ const postureSlice = createSlice({
       bad: 50,
       alertAngle: 15,
       alertDelay: 5,
-      vibrationIntensity: 70
+      vibrationIntensity: 70,
+      vibrationEnabled: true,
+      slouchWarningTime: 10,
+      slouchStrongTime: 30,
+      snoozeDuration: 20,
+      stopDuration: 600,
+      reminderMessage: "Spine Alignment Alert! Please sit up straight, roll your shoulders back, and protect your back."
     },
     baselineAngle: 90,
     streak: { current: 5, longest: 8 },

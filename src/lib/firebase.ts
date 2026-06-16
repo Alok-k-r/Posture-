@@ -1,7 +1,23 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+
+// Safely load the firebase configuration using Vite's glob import.
+// This prevents compilation failure if the user deletes the firebase-applet-config.json file.
+const configs = (import.meta as any).glob('../../firebase-applet-config.json', { eager: true });
+const configKeys = Object.keys(configs);
+
+const firebaseConfig = configKeys.length > 0
+  ? (configs[configKeys[0]] as any).default
+  : {
+      apiKey: "mock-key-for-local-vibration-demo-only",
+      authDomain: "mock-app.firebaseapp.com",
+      projectId: "mock-app",
+      storageBucket: "mock-app.appspot.com",
+      messagingSenderId: "000000000000",
+      appId: "1:000000000000:web:0000000000000000000000",
+      firestoreDatabaseId: "(default)"
+    };
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -45,13 +61,19 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Test connection strictly as requested
+// Test connection strictly as requested unless in mockup mode
 async function testConnection() {
+  if (firebaseConfig.apiKey && firebaseConfig.apiKey.includes('mock')) {
+    console.warn("Using mock Firebase configuration. Running in offline/local simulator mode.");
+    return;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration or internet connection.");
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.warn("Please check your Firebase configuration or internet connection.");
+    } else {
+      console.warn("Firebase live database test connection failed:", error instanceof Error ? error.message : error);
     }
   }
 }
