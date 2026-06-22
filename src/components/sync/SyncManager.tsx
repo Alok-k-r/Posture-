@@ -1,29 +1,31 @@
 import React, { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { RootState, setOnlineStatus, removeFromSyncQueue, updateAngle, setThresholds, addAppointment } from '../../store/store';
+import { RootState, setOnlineStatus, removeFromSyncQueue, updateAngle, setThresholds, setHasPaired, setDeviceStatus, updateBattery, setPostureHistory, setIsRecordingSession } from '../../store/store';
 import { Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, auth, handleFirestoreError, OperationType } from '../../lib/firebase';
-import { doc, onSnapshot, setDoc, collection, getDocs, query, limit } from 'firebase/firestore';
+import { db, auth, rtdb } from '../../lib/firebase';
+import { doc, onSnapshot, setDoc, collection, query, limit, orderBy } from 'firebase/firestore';
+import { ref as rtdbRef, onValue as onRtdbValue, query as rtdbQuery, limitToLast } from 'firebase/database';
 
 export const SyncManager: React.FC = () => {
   const dispatch = useDispatch();
   const { isOnline, syncQueue } = useSelector((state: RootState) => state.sync);
-  const { isSimulating, angle, thresholds } = useSelector((state: RootState) => state.posture);
+  const { isSimulating, angle, isRecordingSession, autoRecordEnabled } = useSelector((state: RootState) => state.posture);
   const user = useSelector((state: RootState) => state.auth.user);
 
-  // 1. Simulation logic (Real-time monitoring)
+  // References to keep latest values inside asynchronous sockets
+  const autoRecordRef = React.useRef(autoRecordEnabled);
+  const isRecordingRef = React.useRef(isRecordingSession);
+
   useEffect(() => {
-    let interval: any;
-    if (isSimulating) {
-      interval = setInterval(() => {
-        const randomChange = (Math.random() - 0.5) * 4;
-        const newAngle = Math.min(95, Math.max(45, angle + randomChange));
-        dispatch(updateAngle(newAngle));
-      }, 1500);
-    }
-    return () => clearInterval(interval);
-  }, [isSimulating, angle, dispatch]);
+    autoRecordRef.current = autoRecordEnabled;
+  }, [autoRecordEnabled]);
+
+  useEffect(() => {
+    isRecordingRef.current = isRecordingSession;
+  }, [isRecordingSession]);
+
+  // 1. Simulation logic has been removed as requested to use only the live Firebase RTDB stream.
 
   // 2. Connectivity Listeners
   useEffect(() => {
@@ -39,24 +41,85 @@ export const SyncManager: React.FC = () => {
     };
   }, [dispatch]);
 
-  // 3. Real-time Device Listener (ESP32 / Cloud sync)
+  // 3. Real-time Device & History Listeners (ESP32 Integration - Firebase Realtime Database)
   useEffect(() => {
-    if (!user?.id || !auth.currentUser) return;
+    const deviceId = 'demo-123';
 
-    const deviceRef = doc(db, 'devices', user.id);
-    const unsubscribe = onSnapshot(deviceRef, (snapshot) => {
+    // A. Listen to the current device node on RTDB for live posture & status
+    const currentRef = rtdbRef(rtdb, `devices/${deviceId}/current`);
+    const unsubscribeDevice = onRtdbValue(currentRef, (snapshot) => {
       if (snapshot.exists()) {
-        const data = snapshot.data();
-        if (typeof data.angle === 'number' && !isSimulating) { // Simulation takes priority locally
+        const data = snapshot.val();
+        
+        // Auto-configure paired state
+        dispatch(setHasPaired(true));
+        dispatch(setDeviceStatus(true));
+
+        if (typeof data.batteryLevel === 'number' || typeof data.battery === 'number') {
+          dispatch(updateBattery(data.batteryLevel ?? data.battery));
+        }
+        
+        if (typeof data.angle === 'number') {
           dispatch(updateAngle(data.angle));
+        }
+
+        // Auto-resume recording session when device goes online and sends data
+        if (autoRecordRef.current && !isRecordingRef.current) {
+          dispatch(setIsRecordingSession(true));
         }
       }
     }, (error) => {
-      console.warn('Real-time listener paused (Permissions/Offline)');
+      console.warn('RTDB current status listener offline/error: ', error.message);
     });
 
-    return () => unsubscribe();
-  }, [user?.id, auth.currentUser, dispatch, isSimulating]);
+    // B. Fetch the history log from `/devices/{uid}/history` on RTDB, limited to last 50
+    const historyRef = rtdbQuery(rtdbRef(rtdb, `devices/${deviceId}/history`), limitToLast(50));
+    const unsubscribeHistory = onRtdbValue(historyRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const val = snapshot.val();
+        if (!val) return;
+        
+        // Convert key-value object to array
+        const list = Object.entries(val).map(([key, item]: [string, any]) => ({
+          id: key,
+          ...(typeof item === 'object' ? item : { angle: item })
+        }));
+
+        // Sort descending by numeric key/timestamp or alphanumeric push key
+        list.sort((a, b) => {
+          const numA = Number(a.id);
+          const numB = Number(b.id);
+          if (!isNaN(numA) && !isNaN(numB)) {
+            return numB - numA; // Sort descending numerically
+          }
+          return b.id.localeCompare(a.id); // Lexicographical sort
+        });
+
+        const latest = list[0];
+        if (latest && typeof latest.angle === 'number') {
+          dispatch(updateAngle(latest.angle));
+        }
+        if (latest && (typeof latest.batteryLevel === 'number' || typeof latest.battery === 'number')) {
+          dispatch(updateBattery(latest.batteryLevel ?? latest.battery));
+        }
+
+        const angles = list
+          .map(d => d.angle)
+          .filter((v): v is number => typeof v === 'number');
+
+        if (angles.length > 0) {
+          dispatch(setPostureHistory(angles));
+        }
+      }
+    }, (error) => {
+      console.warn('RTDB history listener offline/error: ', error.message);
+    });
+
+    return () => {
+      unsubscribeDevice();
+      unsubscribeHistory();
+    };
+  }, [dispatch]);
 
   // 4. Initial Data Fetch (Settings & Appointments)
   useEffect(() => {
@@ -65,9 +128,8 @@ export const SyncManager: React.FC = () => {
     const fetchProfile = async () => {
       try {
         // Sync Thresholds
-        const tPath = `users/${user.id}/settings/thresholds`;
         const tRef = doc(db, 'users', user.id, 'settings', 'thresholds');
-        const tSnap = await onSnapshot(tRef, (doc) => {
+        const tSnap = onSnapshot(tRef, (doc) => {
           if (doc.exists()) {
              dispatch(setThresholds(doc.data()));
           }
@@ -97,7 +159,6 @@ export const SyncManager: React.FC = () => {
         dispatch(removeFromSyncQueue(action.id));
       } catch (error) {
         console.error('Sync failed for action:', action.type, error);
-        // We stop to avoid out-of-order issues, but technically some could be independent
         break; 
       }
     }

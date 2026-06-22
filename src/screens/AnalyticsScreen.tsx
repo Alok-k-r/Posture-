@@ -7,7 +7,7 @@ import { TrendingUp, Target, Zap, Clock, Calendar, ChevronRight } from 'lucide-r
 import { cn } from '../lib/utils';
 
 export const AnalyticsScreen: React.FC = () => {
-  const { thresholds, score: currentScore, history } = useSelector((state: RootState) => state.posture);
+  const { thresholds, score: currentScore, history, incidents } = useSelector((state: RootState) => state.posture);
   const [selectedDayIndex, setSelectedDayIndex] = useState(4); 
   const [viewType, setViewType] = useState<'week' | 'month'>('month');
 
@@ -16,7 +16,7 @@ export const AnalyticsScreen: React.FC = () => {
     ? Math.round(history.reduce((acc, val) => acc + val, 0) / history.length) 
     : 82;
 
-  const incidentCount = history.filter(a => a < thresholds.warn).length;
+  const incidentCount = incidents;
 
   const weeklyData = [
     { day: 'Mon', score: 85, slouches: 5, distribution: [{ name: 'Good', value: 70, color: '#22C55E' }, { name: 'Fair', value: 20, color: '#F97316' }, { name: 'Poor', value: 10, color: '#EF4444' }] },
@@ -81,7 +81,7 @@ export const AnalyticsScreen: React.FC = () => {
       {/* KPI Bento Grid */}
       <div className="grid grid-cols-2 gap-4">
         {[
-          { label: 'Session Slouches', value: incidentCount || '12', icon: Zap, color: 'text-orange', bg: 'bg-orange/10' },
+          { label: 'Session Slouches', value: incidentCount, icon: Zap, color: 'text-orange', bg: 'bg-orange/10' },
           { label: 'Wellness Goal', value: '85%', icon: Target, color: 'text-violet-600', bg: 'bg-violet-100/50' },
         ].map((kpi, i) => (
           <div key={i} className="glass p-5 rounded-[32px] shadow-soft space-y-3">

@@ -26,8 +26,9 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
 
   const mainColor = getZoneColor(angle);
 
-  // Calculate tilt based on angle (90 is vertical, smaller is more leaning)
-  const neckBending = (90 - angle); 
+  // Clamp angle to safe visual bounds (15 to 105 degrees) to prevent anatomical out-of-frame clipping
+  const clampedAngle = Math.max(15, Math.min(105, angle));
+  const neckBending = (90 - clampedAngle); 
 
   // Colors (Light Mode Default)
   const headFill = 'white';
@@ -58,22 +59,22 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
           </linearGradient>
         </defs>
 
-        {/* Shoulder / Upper Torso (Side View) */}
+        {/* Shoulder / Upper Torso (Side View - shifted left by 15px for tilt clearance) */}
         <path 
-          d="M 60 180 Q 80 140 140 150 L 150 180 Z" 
+          d="M 45 180 Q 65 140 125 150 L 135 180 Z" 
           fill="#f1f5f9" 
           stroke="#cbd5e1" 
           strokeWidth="1"
         />
 
-        {/* Neck & Head Group (Dynamic tilt) */}
+        {/* Neck & Head Group (Dynamic tilt with 75px 145px pivot) */}
         <motion.g
-          animate={{ rotate: neckBending * 0.8, transformOrigin: '90px 145px' }}
+          animate={{ rotate: neckBending * 0.8, transformOrigin: '75px 145px' }}
           transition={{ type: "spring", stiffness: 40, damping: 12 }}
         >
           {/* Neck */}
           <path
-            d="M 85 145 Q 85 110 95 90"
+            d="M 70 145 Q 70 110 80 90"
             fill="none"
             stroke="#e2e8f0"
             strokeWidth="18"
@@ -81,7 +82,7 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
           />
           
           {/* Head (Side Cartoon Profile) */}
-          <g transform="translate(95, 35)">
+          <g transform="translate(80, 35)">
             {/* Main Head Shape */}
             <path 
               d="M 0 0 C 25 0, 45 20, 45 45 C 45 70, 30 90, 0 90 C -20 90, -35 70, -35 45 C -35 20, -20 0, 0 0 Z" 
@@ -99,7 +100,7 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
 
           {/* Spine Segment Highlight */}
           <motion.path
-            d="M 85 145 Q 85 110 95 90"
+            d="M 70 145 Q 70 110 80 90"
             fill="none"
             stroke={mainColor}
             strokeWidth="3"

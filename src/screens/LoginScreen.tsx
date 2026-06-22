@@ -65,6 +65,29 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
+  const handleSkipSignup = async () => {
+    setIsLoading(true);
+    try {
+      try {
+        await signInAnonymously(auth);
+      } catch (err: any) {
+        console.warn('Firebase Anonymous Auth failed or bypassed:', err?.message || err);
+      }
+      
+      dispatch(login({
+        id: 'guest-' + Math.floor(Math.random() * 100000), 
+        name: 'Guest Explorer',
+        email: 'guest@posturecare.health',
+        photo: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Guest'
+      }));
+      setIsLoading(false);
+      navigate('/');
+    } catch (error) {
+      console.error('Demo Guest Sign In Error:', error);
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-greenPale via-green50 to-green100 flex flex-col items-center justify-center p-6 relative overflow-hidden">
       
@@ -180,6 +203,15 @@ export const LoginScreen: React.FC = () => {
         >
           <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
           Sign in with Google
+        </button>
+
+        <button
+          type="button"
+          onClick={handleSkipSignup}
+          disabled={isLoading}
+          className="w-full mt-3 bg-slate-900 border border-slate-800 text-white py-4 rounded-2xl font-extrabold text-sm shadow-premium flex items-center justify-center gap-2 active:scale-[0.98] transition-all hover:bg-slate-800"
+        >
+          Skip Signup & View App
         </button>
 
         <div className="mt-8 flex items-center justify-center gap-2 text-textMuted border-t border-border pt-6">

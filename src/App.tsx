@@ -24,11 +24,13 @@ import { ReportsScreen } from './screens/ReportsScreen';
 import { ThresholdScreen } from './screens/ThresholdScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
 import { DeviceScreen } from './screens/DeviceScreen';
+import { DeviceSetupScreen } from './screens/DeviceSetupScreen';
 
 // Guard for protected routes
-const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+const AuthGuard: React.FC<{ children: React.ReactNode; allowSetup?: boolean }> = ({ children, allowSetup = false }) => {
   const isAuth = useSelector((state: RootState) => state.auth.isAuth);
   const loading = useSelector((state: RootState) => state.auth.loading);
+  const device = useSelector((state: RootState) => state.device);
 
   if (loading) {
     return (
@@ -38,7 +40,16 @@ const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     );
   }
 
-  return isAuth ? <>{children}</> : <Navigate to="/login" />;
+  if (!isAuth) {
+    return <Navigate to="/login" />;
+  }
+
+  // If user hasn't paired yet and hasn't explicitly skipped in this session, guide them to Onboarding Setup
+  if (!device.hasPaired && !device.skippedSetup && !allowSetup) {
+    return <Navigate to="/device-setup" />;
+  }
+
+  return <>{children}</>;
 };
 
 function AppContent() {
@@ -62,6 +73,7 @@ function AppContent() {
       <Layout>
         <Routes>
           <Route path="/login" element={<LoginScreen />} />
+          <Route path="/device-setup" element={<AuthGuard allowSetup={true}><DeviceSetupScreen /></AuthGuard>} />
           <Route path="/" element={<AuthGuard><DashboardScreen /></AuthGuard>} />
           <Route path="/posture" element={<AuthGuard><PostureScreen /></AuthGuard>} />
           <Route path="/appointments" element={<AuthGuard><AppointmentsScreen /></AuthGuard>} />

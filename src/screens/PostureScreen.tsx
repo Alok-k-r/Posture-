@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, updateAngle, setIsSimulating } from '../store/store';
+import { RootState, updateAngle, setIsSimulating, setIsRecordingSession } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
-import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot } from 'lucide-react';
+import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot, Pause } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { generatePostureSummary } from '../services/geminiService';
@@ -11,7 +11,8 @@ import Markdown from 'react-markdown';
 
 export const PostureScreen: React.FC = () => {
   const dispatch = useDispatch();
-  const { angle, score, thresholds, history, isSimulating } = useSelector((state: RootState) => state.posture);
+  const device = useSelector((state: RootState) => state.device);
+  const { angle, score, thresholds, history, isSimulating, isRecordingSession, totalSessionSeconds, maxFocusDuration } = useSelector((state: RootState) => state.posture);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
 
@@ -35,23 +36,15 @@ export const PostureScreen: React.FC = () => {
 
   const chartData = history.slice().reverse().map((a, i) => ({ index: i, angle: a }));
 
-  // Live Timer for continuous Sitting Duration
-  const [elapsedSeconds, setElapsedSeconds] = useState(8040); // Baseline 2h 14m
-
-  useEffect(() => {
-    let timer: any;
-    if (isSimulating) {
-      timer = setInterval(() => {
-        setElapsedSeconds(prev => prev + 1);
-      }, 1000);
-    }
-    return () => clearInterval(timer);
-  }, [isSimulating]);
-
   const formatDuration = (totalSecs: number) => {
+    if (!totalSecs || totalSecs === 0) return '0s';
     const h = Math.floor(totalSecs / 3600);
     const m = Math.floor((totalSecs % 3600) / 60);
     const s = totalSecs % 60;
+    if (h === 0) {
+      if (m === 0) return `${s}s`;
+      return `${m}m ${s}s`;
+    }
     return `${h}h ${m}m ${s}s`;
   };
 
@@ -70,7 +63,6 @@ export const PostureScreen: React.FC = () => {
   };
 
   const getFatigueRisk = (hist: number[], currentScore: number) => {
-    // If no history exists, fallback on current score
     const poorCount = hist.filter(h => h < thresholds.warn).length;
     const ratio = hist.length > 0 ? poorCount / hist.length : (currentScore < thresholds.warn ? 0.6 : 0.1);
 
@@ -95,9 +87,9 @@ export const PostureScreen: React.FC = () => {
 
   const metrics = [
     { label: 'Shoulder Balance', value: shoulder.value, icon: Shield, color: shoulder.color },
-    { label: 'Sitting Duration', value: formatDuration(elapsedSeconds), icon: Clock, color: 'text-orange' },
+    { label: 'Sitting Duration', value: formatDuration(totalSessionSeconds), icon: Clock, color: 'text-orange' },
     { label: 'Fatigue Risk', value: fatigue.value, icon: Activity, color: fatigue.color },
-    { label: 'Focus Score', value: focus.value, icon: (props: any) => <Zap size={14} {...props} />, color: focus.color, isZap: true },
+    { label: 'Focus Max Streak', value: formatDuration(maxFocusDuration), icon: (props: any) => <Zap size={14} {...props} />, color: 'text-purple-500', isZap: true },
   ];
 
   return (
@@ -108,16 +100,55 @@ export const PostureScreen: React.FC = () => {
           <h2 className="text-3xl font-extrabold text-slate-800 tracking-tight leading-none">Diagnostic</h2>
           <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] mt-2">Biometric Stream v2.8</p>
         </div>
-        <div className="glass p-2 rounded-2xl flex items-center gap-2 shadow-soft">
-           <button 
-             onClick={() => dispatch(setIsSimulating(!isSimulating))}
-             className={cn(
-               "w-12 h-12 rounded-xl flex items-center justify-center transition-all active:scale-95",
-               isSimulating ? "bg-slate-900 text-white shadow-lg" : "bg-white text-slate-400 border border-slate-100"
-             )}
-           >
-             {isSimulating ? <Square size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
-           </button>
+        <div className="glass p-3 px-4 rounded-3xl flex flex-col justify-center gap-1 shadow-soft border-white/60 min-w-[210px]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="relative flex h-2 w-2">
+                  {isRecordingSession && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  )}
+                  <span className={cn(
+                    "relative inline-flex rounded-full h-2 w-2",
+                    isRecordingSession ? "bg-rose-500" : "bg-slate-400"
+                  )}></span>
+                </span>
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-800">
+                  {isRecordingSession ? "Recording Session" : "Session Paused"}
+                </span>
+              </div>
+              <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wide mt-0.5">
+                {isRecordingSession ? "Alarms & History Active" : "In Standby Mode"}
+              </span>
+            </div>
+
+            <button
+              onClick={() => dispatch(setIsRecordingSession(!isRecordingSession))}
+              className={cn(
+                "p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border",
+                isRecordingSession 
+                  ? "bg-amber-500 hover:bg-amber-600 border-amber-400 text-white" 
+                  : "bg-emerald-500 hover:bg-emerald-600 border-emerald-400 text-white"
+              )}
+              id="btn-session-toggle"
+            >
+              {isRecordingSession ? (
+                <>
+                  <Pause size={10} className="stroke-[3]" fill="currentColor" />
+                  Pause
+                </>
+              ) : (
+                <>
+                  <Play size={10} className="stroke-[3]" fill="currentColor" />
+                  Resume
+                </>
+              )}
+            </button>
+          </div>
+          <div className="border-t border-slate-100/80 mt-1.5 pt-1 flex justify-between items-center text-[8px] font-mono text-slate-400">
+            <span>Live Angle: {angle}°</span>
+            <span>Pod Status: {device.isConnected ? "ONLINE" : "OFFLINE"}</span>
+          </div>
         </div>
       </div>
 

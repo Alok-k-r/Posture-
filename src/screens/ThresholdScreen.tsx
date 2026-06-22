@@ -84,7 +84,7 @@ export const ThresholdScreen: React.FC = () => {
         <div className="bg-slate-100/50 p-4 rounded-3xl flex items-center justify-between">
           <div>
             <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Current Baseline</p>
-            <p className="text-xl font-black text-slate-800">{baselineAngle}°</p>
+            <p className="text-xl font-black text-slate-800">{Math.round(baselineAngle)}°</p>
           </div>
           <button 
             onClick={handleRecalibrate}

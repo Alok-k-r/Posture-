@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
-import { Activity, Shield, Flame, AlertCircle, ChevronRight, Trophy, Star, Clock, Zap, Sparkles, Battery, Wifi, WifiOff, Bell } from 'lucide-react';
+import { Activity, Shield, Flame, AlertCircle, ChevronRight, Trophy, Star, Clock, Zap, Sparkles, Battery, Wifi, WifiOff, Bell, ShieldCheck } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { useDispatch } from 'react-redux';
 import { analyzePosture } from '../services/geminiService';
 import { sendLocalNotification } from '../services/notificationService';
 import { useNavigate } from 'react-router-dom';
@@ -16,12 +15,127 @@ export const DashboardScreen: React.FC = () => {
   const user = useSelector((state: RootState) => state.auth.user);
   const posture = useSelector((state: RootState) => state.posture);
   const device = useSelector((state: RootState) => state.device);
-  const { thresholds, streak, isSimulating } = posture;
+  const { thresholds, streak } = posture;
 
   // Posture Monitoring is managed dynamically with custom snooze and stop delays in SlouchAlarmManager.
   useEffect(() => {
     // Left empty purposely as posture alerts are managed gracefully via SlouchAlarmManager.
   }, []);
+
+  const formatSecs = (sec: number) => {
+    if (!sec || sec === 0) return '0s';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m === 0) return `${s}s`;
+    return `${m}m ${s}s`;
+  };
+
+  const getSpinalIntelAlerts = () => {
+    const list = [];
+    const diff = Math.max(0, posture.baselineAngle - posture.angle);
+    
+    // 1. Biomechanical Alignment Alert
+    if (diff > 15) {
+      list.push({
+        msg: `Severe spine tilt: ${diff}° deflection off baseline. Intervertebral shear force is significantly elevated.`,
+        type: 'danger',
+        time: 'Active',
+        icon: AlertCircle,
+        bg: 'bg-rose-50/70',
+        color: 'text-rose-500',
+        border: 'border-rose-100'
+      });
+    } else if (diff > 5) {
+      list.push({
+        msg: `Mild spine tilt: ${diff}° deflection off baseline. Paraspinal fatigue loading detected.`,
+        type: 'warn',
+        time: 'Active',
+        icon: Activity,
+        bg: 'bg-amber-50/70',
+        color: 'text-amber-600',
+        border: 'border-amber-100'
+      });
+    } else {
+      list.push({
+        msg: `Optimal S-Curve: Aligning beautifully in vertical envelope under balanced vertebral pressure.`,
+        type: 'good',
+        time: 'Continuous',
+        icon: ShieldCheck,
+        bg: 'bg-emerald-50/50',
+        color: 'text-emerald-500',
+        border: 'border-emerald-100'
+      });
+    }
+
+    // 2. Incident Frequency & Core Stability Alert
+    if (posture.incidents > 3) {
+      list.push({
+        msg: `System flagged ${posture.incidents} slouch incidents. Core fatigue detected; we recommend a 2-minute standing stretch.`,
+        type: 'warn',
+        time: 'Session Feed',
+        icon: AlertCircle,
+        bg: 'bg-orange-50/50',
+        color: 'text-orange-500',
+        border: 'border-orange-100'
+      });
+    } else if (posture.incidents > 0) {
+      list.push({
+        msg: `Composure maintained. Underwent ${posture.incidents} slouch transitions with stable posture recovery.`,
+        type: 'good',
+        time: 'Active',
+        icon: Shield,
+        bg: 'bg-slate-50/80',
+        color: 'text-slate-500',
+        border: 'border-slate-150'
+      });
+    } else {
+      list.push({
+        msg: `Spotless active session: 0 slouch incidents logged. Slow-twitch back muscles are performing exceptional control!`,
+        type: 'good',
+        time: 'Pristine',
+        icon: Star,
+        bg: 'bg-indigo-50/50',
+        color: 'text-indigo-500',
+        border: 'border-indigo-100'
+      });
+    }
+
+    // 3. Cognitive Oxygenation & Focus Alert
+    if (posture.maxFocusDuration > 120) {
+      const minVal = Math.floor(posture.maxFocusDuration / 60);
+      list.push({
+        msg: `Thoracic volume peak: Kept continuous upright alignment for ${minVal}m to help preserve deep cerebral oxygen count.`,
+        type: 'good',
+        time: 'Peak',
+        icon: Zap,
+        bg: 'bg-purple-50/50',
+        color: 'text-purple-600',
+        border: 'border-purple-100'
+      });
+    } else if (posture.maxFocusDuration > 10) {
+      list.push({
+        msg: `Continuous posture streak hit ${posture.maxFocusDuration} seconds. paravertebral muscle memory actively training.`,
+        type: 'good',
+        time: 'Focus Streak',
+        icon: Zap,
+        bg: 'bg-violet-50/40',
+        color: 'text-violet-500',
+        border: 'border-violet-100'
+      });
+    } else {
+      list.push({
+        msg: `Ready to record focus depth. Hold upright alignment for over 10s to begin tracking continuous composure streaks.`,
+        type: 'warn',
+        time: 'Diagnostic',
+        icon: Clock,
+        bg: 'bg-slate-50/60',
+        color: 'text-slate-400',
+        border: 'border-slate-100'
+      });
+    }
+
+    return list;
+  };
 
   const getStatusInfo = (val: number) => {
     if (val >= thresholds.good) return { 
@@ -53,7 +167,7 @@ export const DashboardScreen: React.FC = () => {
     };
   };
 
-  const status = getStatusInfo(posture.angle);
+  const status = getStatusInfo(posture.score);
 
   return (
     <div className="p-6 space-y-8 pb-28 relative z-10">
@@ -64,7 +178,7 @@ export const DashboardScreen: React.FC = () => {
           <h2 className="text-3xl font-black text-slate-800 tracking-tight leading-none">Hello, {user?.name?.split(' ')[0]}</h2>
         </div>
         <div className="flex items-center gap-3">
-            <div className="flex flex-col items-end gap-1">
+          <div className="flex flex-col items-end gap-1">
             <div className={cn(
               "flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-colors",
               device.isConnected ? "bg-emerald-100/50 text-emerald-600 border border-emerald-200/50" : "bg-rose-100/50 text-rose-600 border border-rose-200/50"
@@ -148,7 +262,7 @@ export const DashboardScreen: React.FC = () => {
         <div className="flex items-end justify-between relative z-10">
           <div className="space-y-1">
             <h4 className={cn("text-4xl font-black tracking-tighter leading-none px-1", status.text)}>
-              {Math.round(posture.score)}%
+               {Math.round(posture.score)}%
             </h4>
             <p className={cn("text-[9px] font-black uppercase tracking-[0.2em] opacity-40 leading-none", status.text)}>Integrity Score</p>
           </div>
@@ -200,7 +314,7 @@ export const DashboardScreen: React.FC = () => {
               <AlertCircle size={20} fill="currentColor" />
            </div>
            <div>
-              <div className="text-2xl font-black text-bento-rose-text">{posture.history.filter(a => a < thresholds.warn).length}</div>
+              <div className="text-2xl font-black text-bento-rose-text">{posture.incidents}</div>
               <p className="text-[10px] font-black uppercase tracking-widest text-bento-rose-text/60">Incidents</p>
            </div>
         </div>
@@ -212,7 +326,7 @@ export const DashboardScreen: React.FC = () => {
            </div>
            <div>
               <div className="text-2xl font-black text-bento-violet-text">
-                {Math.min(60, Math.max(15, Math.round(posture.score * 0.65 + 4)))}m
+                {formatSecs(posture.maxFocusDuration)}
               </div>
               <p className="text-[10px] font-black uppercase tracking-widest text-bento-violet-text/60">Focus Max</p>
            </div>
@@ -232,62 +346,55 @@ export const DashboardScreen: React.FC = () => {
 
       {/* Postural Intel: AI Alerts Layer */}
       <div className="space-y-5">
-        <div className="flex items-center justify-between px-2">
-           <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
-                 <Sparkles size={20} />
-              </div>
-              <h3 className="text-xl font-black tracking-tight text-slate-800">Spinal Intel</h3>
-           </div>
-           <button 
-             onClick={async () => {
-               const insight = await analyzePosture(posture.angle, posture.history);
-               sendLocalNotification('AI Insight', { body: insight, icon: '✨' });
-             }}
-             className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:bg-indigo-50 px-3 py-2 rounded-xl transition-colors"
-           >
-             AI Analysis
-           </button>
-        </div>
-        
-        <div className="space-y-4">
-          {(posture.angle < thresholds.warn ? [
-            { msg: 'System detected slump period.', type: 'warn', time: 'Just now', icon: AlertCircle, bg: 'bg-orange/10', color: 'text-orange', border: 'border-orange/20' },
-            { msg: 'Muscle fatigue risk elevated.', type: 'warn', time: '1m ago', icon: Activity, bg: 'bg-orange/10', color: 'text-orange', border: 'border-orange/20' }
-          ] : [
-            { msg: 'Consistency target reached.', type: 'good', time: 'Just now', icon: Star, bg: 'bg-emerald-50/50', color: 'text-emerald-500', border: 'border-emerald-100' },
-            { msg: 'Spinal integrity optimal.', type: 'good', time: '2m ago', icon: Shield, bg: 'bg-emerald-50/50', color: 'text-emerald-500', border: 'border-emerald-100' }
-          ]).map((alert, i) => (
-            <motion.div 
-              key={i} 
-              layout
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              whileHover={{ scale: 1.02 }}
-              className={cn(
-                "p-5 rounded-[36px] flex items-center gap-5 border transition-all cursor-pointer group shadow-soft",
-                alert.bg,
-                alert.border
-              )}
+         <div className="flex items-center justify-between px-2">
+            <div className="flex items-center gap-3">
+               <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
+                  <Sparkles size={20} />
+               </div>
+               <h3 className="text-xl font-black tracking-tight text-slate-800">Spinal Intel</h3>
+            </div>
+            <button 
+              onClick={async () => {
+                const insight = await analyzePosture(posture.angle, posture.history);
+                sendLocalNotification('AI Insight', { body: insight, icon: '✨' });
+              }}
+              className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:bg-indigo-50 px-3 py-2 rounded-xl transition-colors"
             >
-              <div className="w-14 h-14 rounded-2xl bg-white shadow-soft flex items-center justify-center text-2xl flex-shrink-0 transition-transform group-hover:scale-110">
-                <alert.icon size={22} className={alert.color} fill={alert.type === 'good' ? "currentColor" : "none"} />
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-black text-slate-800 leading-tight">{alert.msg}</p>
-                <div className="flex items-center gap-2 mt-1.5 opacity-60">
-                   <Clock size={10} className="text-slate-400" />
-                   <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{alert.time}</span>
-                </div>
-              </div>
-              <div className="w-10 h-10 rounded-xl bg-white/50 flex items-center justify-center text-slate-300 group-hover:text-slate-500 group-hover:bg-white transition-all">
-                <ChevronRight size={18} />
-              </div>
-            </motion.div>
-          ))}
-        </div>
+              AI Analysis
+            </button>
+         </div>
+         
+         <div className="space-y-4">
+           {getSpinalIntelAlerts().map((alert, i) => (
+             <motion.div 
+               key={i} 
+               layout
+               initial={{ opacity: 0, x: -20 }}
+               animate={{ opacity: 1, x: 0 }}
+               whileHover={{ scale: 1.02 }}
+               className={cn(
+                 "p-5 rounded-[36px] flex items-center gap-5 border transition-all cursor-pointer group shadow-soft bg-white",
+                 alert.bg,
+                 alert.border
+               )}
+             >
+               <div className="w-14 h-14 rounded-2xl bg-white shadow-soft flex items-center justify-center text-2xl flex-shrink-0 transition-transform group-hover:scale-110">
+                 <alert.icon size={22} className={alert.color} fill={alert.type === 'good' ? "currentColor" : "none"} />
+               </div>
+               <div className="flex-1">
+                 <p className="text-sm font-black text-slate-800 leading-tight">{alert.msg}</p>
+                 <div className="flex items-center gap-2 mt-1.5 opacity-60">
+                    <Clock size={10} className="text-slate-400" />
+                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{alert.time}</span>
+                 </div>
+               </div>
+               <div className="w-10 h-10 rounded-xl bg-white/50 flex items-center justify-center text-slate-300 group-hover:text-slate-500 group-hover:bg-white transition-all">
+                 <ChevronRight size={18} />
+               </div>
+             </motion.div>
+           ))}
+         </div>
       </div>
     </div>
   );
 };
-

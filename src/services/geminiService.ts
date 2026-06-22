@@ -25,8 +25,8 @@ export const analyzePosture = async (angle: number, history: number[]) => {
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: "gemini-3.1-flash-lite",
-      contents: `The patient's current posture angle is ${angle.toFixed(1)} degrees. 
-History of last 10 readings: ${history.slice(0, 10).map(n => n.toFixed(1)).join(', ')}.
+      contents: `The patient's current posture angle is ${angle.toFixed(0)} degrees. 
+History of last 10 readings: ${history.slice(0, 10).map(n => n.toFixed(0)).join(', ')}.
 Provide a crisp, 1-sentence medical insight for spinal alignment.`,
       config: {
         systemInstruction: "You are a professional Physiotherapist. Be extremely concise. Avoid fluff. Focus on immediate biomechanical correction.",

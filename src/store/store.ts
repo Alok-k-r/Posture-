@@ -91,6 +91,17 @@ interface PostureState {
   baselineAngle: number;
   streak: { current: number; longest: number };
   isSimulating: boolean;
+  isRecordingSession: boolean;
+  autoRecordEnabled: boolean;
+  // Dynamic session tracking metrics
+  isCurrentlySlouching: boolean;
+  incidents: number;
+  maxFocusDuration: number;
+  currentFocusDuration: number;
+  totalSessionSeconds: number;
+  goodSessionSeconds: number;
+  warnSessionSeconds: number;
+  integrityScore: number;
 }
 
 const postureSlice = createSlice({
@@ -116,28 +127,148 @@ const postureSlice = createSlice({
     baselineAngle: 90,
     streak: { current: 5, longest: 8 },
     isSimulating: false,
+    isRecordingSession: true,
+    autoRecordEnabled: false,
+    // Dynamic session stats defaults
+    isCurrentlySlouching: false,
+    incidents: 0,
+    maxFocusDuration: 0,
+    currentFocusDuration: 0,
+    totalSessionSeconds: 0,
+    goodSessionSeconds: 0,
+    warnSessionSeconds: 0,
+    integrityScore: 100,
   } as PostureState,
   reducers: {
     updateAngle: (state, action: PayloadAction<number>) => {
-      state.angle = action.payload;
-      state.score = action.payload; // Simplified for now
-      state.history = [action.payload, ...state.history].slice(0, 50);
+      const rounded = Math.round(action.payload);
+      state.angle = rounded;
+      
+      // Self-heal any stale/undefined fields from old redux-persist cache
+      if (state.totalSessionSeconds === undefined || isNaN(state.totalSessionSeconds)) state.totalSessionSeconds = 0;
+      if (state.goodSessionSeconds === undefined || isNaN(state.goodSessionSeconds)) state.goodSessionSeconds = 0;
+      if (state.warnSessionSeconds === undefined || isNaN(state.warnSessionSeconds)) state.warnSessionSeconds = 0;
+      if (state.incidents === undefined || isNaN(state.incidents)) state.incidents = 0;
+      if (state.isCurrentlySlouching === undefined) state.isCurrentlySlouching = false;
+      if (state.currentFocusDuration === undefined || isNaN(state.currentFocusDuration)) state.currentFocusDuration = 0;
+      if (state.maxFocusDuration === undefined || isNaN(state.maxFocusDuration)) state.maxFocusDuration = 0;
+      if (state.integrityScore === undefined || isNaN(state.integrityScore)) state.integrityScore = 100;
+      if (state.score === undefined || isNaN(state.score)) state.score = 100;
+
+      if (!state.isRecordingSession) {
+        state.score = rounded; // If not recording, let the ring reflect raw live posture
+      } else {
+        state.score = state.integrityScore; // Ensure display score represents actual commitment rating while active
+      }
+    },
+    tickSessionStats: (state) => {
+      // Self-heal any stale/undefined fields from old redux-persist cache
+      if (state.totalSessionSeconds === undefined || isNaN(state.totalSessionSeconds)) state.totalSessionSeconds = 0;
+      if (state.goodSessionSeconds === undefined || isNaN(state.goodSessionSeconds)) state.goodSessionSeconds = 0;
+      if (state.warnSessionSeconds === undefined || isNaN(state.warnSessionSeconds)) state.warnSessionSeconds = 0;
+      if (state.incidents === undefined || isNaN(state.incidents)) state.incidents = 0;
+      if (state.isCurrentlySlouching === undefined) state.isCurrentlySlouching = false;
+      if (state.currentFocusDuration === undefined || isNaN(state.currentFocusDuration)) state.currentFocusDuration = 0;
+      if (state.maxFocusDuration === undefined || isNaN(state.maxFocusDuration)) state.maxFocusDuration = 0;
+      if (state.integrityScore === undefined || isNaN(state.integrityScore)) state.integrityScore = 100;
+      if (state.score === undefined || isNaN(state.score)) state.score = 100;
+
+      if (!state.isRecordingSession) return;
+
+      const angle = state.angle;
+      const t = state.thresholds;
+
+      // 1. Advance total session duration
+      state.totalSessionSeconds += 1;
+
+      // 2. Classify current alignment
+      const isSlouch = angle < t.warn;
+      if (angle >= t.good) {
+        state.goodSessionSeconds += 1;
+      } else if (angle >= t.warn) {
+        state.warnSessionSeconds += 1;
+      }
+
+      // 3. Stable transition-based incident counter & focus duration calculation
+      if (isSlouch) {
+        // If they just entered the slouch zone
+        if (!state.isCurrentlySlouching) {
+          state.incidents += 1;
+          state.isCurrentlySlouching = true;
+          // Record current focus streak if it exceeds max before resetting
+          if (state.currentFocusDuration > state.maxFocusDuration) {
+            state.maxFocusDuration = state.currentFocusDuration;
+          }
+          state.currentFocusDuration = 0;
+        }
+      } else {
+        // They are in healthy alignment
+        state.isCurrentlySlouching = false;
+        state.currentFocusDuration += 1;
+        // Continuously update max focus duration to match current peak
+        if (state.currentFocusDuration > state.maxFocusDuration) {
+          state.maxFocusDuration = state.currentFocusDuration;
+        }
+      }
+
+      // 4. Compute dynamic Posture Integrity (Commitment Score)
+      const totalTimeStr = Math.max(1, state.totalSessionSeconds);
+      const healthyRatio = (state.goodSessionSeconds * 1.0 + state.warnSessionSeconds * 0.75) / totalTimeStr;
+      const rawScore = Math.round(healthyRatio * 100);
+
+      // Transition penalty (e.g., 3% per slouch transition) to motivate maintaining continuous posture
+      const penalty = state.incidents * 3;
+      state.integrityScore = Math.max(30, Math.min(100, rawScore - penalty));
+
+      // Synchronize primary display score to reflect true calculated user alignment commitment
+      state.score = state.integrityScore;
+
+      // Also append score and angle to local history for charts or diagnostic tracking
+      state.history = [angle, ...state.history].slice(0, 50);
+    },
+    resetSessionStats: (state) => {
+      state.totalSessionSeconds = 0;
+      state.goodSessionSeconds = 0;
+      state.warnSessionSeconds = 0;
+      state.incidents = 0;
+      state.isCurrentlySlouching = false;
+      state.currentFocusDuration = 0;
+      state.maxFocusDuration = 0;
+      state.integrityScore = 100;
+      state.score = 100;
     },
     setThresholds: (state, action: PayloadAction<Partial<PostureState['thresholds']>>) => {
       state.thresholds = { ...state.thresholds, ...action.payload };
     },
     recalibrateBaseline: (state, action: PayloadAction<number>) => {
-      state.baselineAngle = action.payload;
+      state.baselineAngle = Math.round(action.payload);
     },
     setIsSimulating: (state, action: PayloadAction<boolean>) => {
       state.isSimulating = action.payload;
+    },
+    setPostureHistory: (state, action: PayloadAction<number[]>) => {
+      if (state.isRecordingSession) {
+        state.history = action.payload.map(Math.round).slice(0, 50);
+      }
+    },
+    setIsRecordingSession: (state, action: PayloadAction<boolean>) => {
+      state.isRecordingSession = action.payload;
+      if (action.payload) {
+        // When resuming starting recording, update raw live posture alignment status
+        state.isCurrentlySlouching = state.angle < state.thresholds.warn;
+      }
+    },
+    setAutoRecordEnabled: (state, action: PayloadAction<boolean>) => {
+      state.autoRecordEnabled = action.payload;
     },
   },
 });
 
 // Device Slice
 interface DeviceState {
+  hasPaired: boolean;
   isConnected: boolean;
+  skippedSetup: boolean;
   batteryLevel: number;
   firmwareVersion: string;
   lastConnected: string | null;
@@ -146,21 +277,39 @@ interface DeviceState {
 const deviceSlice = createSlice({
   name: 'device',
   initialState: {
-    isConnected: true,
+    hasPaired: false,
+    isConnected: false,
+    skippedSetup: false,
     batteryLevel: 85,
     firmwareVersion: 'v2.4.1',
-    lastConnected: new Date().toISOString(),
+    lastConnected: null,
   } as DeviceState,
   reducers: {
     setDeviceStatus: (state, action: PayloadAction<boolean>) => {
       state.isConnected = action.payload;
     },
+    setHasPaired: (state, action: PayloadAction<boolean>) => {
+      state.hasPaired = action.payload;
+      if (action.payload) {
+        state.isConnected = true;
+        state.lastConnected = new Date().toISOString();
+      } else {
+        state.isConnected = false;
+        state.lastConnected = null;
+        state.skippedSetup = false;
+      }
+    },
+    setSkippedSetup: (state, action: PayloadAction<boolean>) => {
+      state.skippedSetup = action.payload;
+    },
     updateBattery: (state, action: PayloadAction<number>) => {
       state.batteryLevel = action.payload;
     },
     unpairDevice: (state) => {
+      state.hasPaired = false;
       state.isConnected = false;
       state.lastConnected = null;
+      state.skippedSetup = false;
     }
   }
 });
@@ -272,8 +421,8 @@ const syncSlice = createSlice({
 
 export const { login, logout, setAuthLoading, updateUser } = authSlice.actions;
 export const { setChatOpen } = uiSlice.actions;
-export const { updateAngle, setThresholds, recalibrateBaseline, setIsSimulating } = postureSlice.actions;
-export const { setDeviceStatus, updateBattery, unpairDevice } = deviceSlice.actions;
+export const { updateAngle, tickSessionStats, resetSessionStats, setThresholds, recalibrateBaseline, setIsSimulating, setPostureHistory, setIsRecordingSession, setAutoRecordEnabled } = postureSlice.actions;
+export const { setDeviceStatus, setHasPaired, setSkippedSetup, updateBattery, unpairDevice } = deviceSlice.actions;
 export const { addAppointment, removeAppointment, updateAppointment, setAppointmentStatus } = appointmentsSlice.actions;
 export const { setOnlineStatus, addToSyncQueue, removeFromSyncQueue, clearSyncQueue } = syncSlice.actions;
 

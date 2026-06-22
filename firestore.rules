@@ -32,9 +32,22 @@ service cloud.firestore {
     }
 
     match /devices/{deviceId} {
-      allow read: if true; // Allow public read for demo/ESP32 stream
-      allow create, update: if isValidId(deviceId) && isValidDevice(incoming());
+      allow read, write: if true;
+      match /{allPaths=**} {
+        allow read, write: if true;
+      }
     }
+
+    match /posture/{id=**} { allow read, write: if true; }
+    match /telemetry/{id=**} { allow read, write: if true; }
+    match /readings/{id=**} { allow read, write: if true; }
+    match /data/{id=**} { allow read, write: if true; }
+    match /history/{id=**} { allow read, write: if true; }
+    match /sensor_data/{id=**} { allow read, write: if true; }
+    match /angles/{id=**} { allow read, write: if true; }
+    match /logs/{id=**} { allow read, write: if true; }
+    match /sensor/{id=**} { allow read, write: if true; }
+    match /postures/{id=**} { allow read, write: if true; }
 
     match /users/{userId} {
       match /appointments/{appointmentId} {

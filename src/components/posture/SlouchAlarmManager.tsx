@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useSelector } from 'react-redux';
-import { RootState } from '../../store/store';
+import { useSelector, useDispatch } from 'react-redux';
+import { RootState, tickSessionStats } from '../../store/store';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertOctagon, Bell, Coffee, Play, Sliders, VolumeX, Volume2, ShieldCheck, HelpCircle, ChevronRight, Clock, ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 export const SlouchAlarmManager: React.FC = () => {
-  const { angle, score, thresholds } = useSelector((state: RootState) => state.posture);
+  const dispatch = useDispatch();
+  const { angle, score, thresholds, isRecordingSession } = useSelector((state: RootState) => state.posture);
   
   // Local active states
   const [slouchSeconds, setSlouchSeconds] = useState(0);
   const [isSnoozed, setIsSnoozed] = useState(false);
   const [snoozeUntil, setSnoozeUntil] = useState<number | null>(null);
+  const [snoozeLevel, setSnoozeLevel] = useState<number | null>(null);
   const [pausedUntil, setPausedUntil] = useState<number | null>(null);
   const [sliderKey, setSliderKey] = useState(0);
 
@@ -30,7 +32,8 @@ export const SlouchAlarmManager: React.FC = () => {
   const vibrationIntervalRef = useRef<any>(null);
   
   // Slouch detection tracking
-  const isSlouching = angle < thresholds.bad;
+  const isSlouching = angle < thresholds.warn;
+  const [goodPostureSeconds, setGoodPostureSeconds] = useState(0);
 
   // 1. Clock timer
   useEffect(() => {
@@ -40,31 +43,44 @@ export const SlouchAlarmManager: React.FC = () => {
     return () => clearInterval(clockTimer);
   }, []);
 
-  // 2. Core slouch clock / counter effect
+  // 2. Core slouch clock / counter effect with robust 3-second debounce
   useEffect(() => {
     let interval: any;
     
-    if (isSlouching) {
+    if (isRecordingSession) {
       interval = setInterval(() => {
+        // Dispatch session metrics tick to Redux
+        dispatch(tickSessionStats());
+
         const now = Date.now();
         if (pausedUntil && now < pausedUntil) {
           setSlouchSeconds(0);
+          setGoodPostureSeconds(0);
           return;
         }
-        
-        setSlouchSeconds((prev) => prev + 1);
+
+        if (isSlouching) {
+          setSlouchSeconds((prev) => prev + 1);
+          setGoodPostureSeconds(0);
+        } else {
+          setGoodPostureSeconds((prev) => {
+            const next = prev + 1;
+            if (next >= 3) {
+              setSlouchSeconds(0); // Reset slouch warning timers only after 3 consecutive seconds of correct posture
+            }
+            return next;
+          });
+        }
       }, 1000);
     } else {
-      // Not slouching -> reset slouch timer
       setSlouchSeconds(0);
-      setIsSnoozed(false);
-      setSnoozeUntil(null);
+      setGoodPostureSeconds(0);
     }
 
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isSlouching, pausedUntil]);
+  }, [isSlouching, pausedUntil, isRecordingSession]);
 
   // 3. Audio Synth Alarm continuous loop controller
   const playAlarmSound = () => {
@@ -148,13 +164,15 @@ export const SlouchAlarmManager: React.FC = () => {
     localStorage.setItem('posturecare_alarm_muted', String(nextMute));
   };
 
-  // 4. Check Snooze expiration
+  // 4. Check Snooze expiration and reset postural count when it ends
   useEffect(() => {
     if (snoozeUntil) {
       const interval = setInterval(() => {
         if (Date.now() >= snoozeUntil) {
           setIsSnoozed(false);
           setSnoozeUntil(null);
+          setSnoozeLevel(null);
+          setSlouchSeconds(0); // Fair count reset: let them posture for given time before Level 1 triggers again
         }
       }, 1000);
       return () => clearInterval(interval);
@@ -164,7 +182,31 @@ export const SlouchAlarmManager: React.FC = () => {
   // 5. Vibration & Sound trigger synchronization
   const activeLevel2 = slouchSeconds >= thresholds.slouchStrongTime;
   const activeLevel1 = slouchSeconds >= thresholds.slouchWarningTime && !activeLevel2;
-  const showOverlayAlarm = (activeLevel1 || activeLevel2) && !(pausedUntil && Date.now() < pausedUntil);
+  const isSnoozedCurrently = isSnoozed && snoozeUntil && Date.now() < snoozeUntil;
+
+  // Decide if the alert overlay and alarm is allowed to prompt:
+  // - If isSnoozedCurrently:
+  //   - If snoozeLevel is 2: Silenced completely.
+  //   - If snoozeLevel is 1: Re-trigger only if it reaches activeLevel2.
+  // - If NOT currently snoozed: show either Level 1 or Level 2 triggers.
+  const isOverlayAllowed = isRecordingSession && (isSnoozedCurrently
+    ? (snoozeLevel === 1 ? activeLevel2 : false)
+    : (activeLevel1 || activeLevel2));
+
+  const showOverlayAlarm = isOverlayAllowed && !(pausedUntil && Date.now() < pausedUntil);
+
+  // Safely snooze alarm on any back button click or layout navigation within HashRouter
+  useEffect(() => {
+    const handleNavigationSnooze = () => {
+      if (showOverlayAlarm) {
+        handleSnooze();
+      }
+    };
+    window.addEventListener('hashchange', handleNavigationSnooze);
+    return () => {
+      window.removeEventListener('hashchange', handleNavigationSnooze);
+    };
+  }, [showOverlayAlarm]);
 
   useEffect(() => {
     if (showOverlayAlarm) {
@@ -177,28 +219,23 @@ export const SlouchAlarmManager: React.FC = () => {
   }, [showOverlayAlarm, isMuted]);
 
   // 6. Vibration loop
-  useEffect(() => {
-    const isVibrationActive = thresholds.vibrationEnabled && slouchSeconds >= thresholds.slouchWarningTime;
-    const now = Date.now();
-    const isPaused = pausedUntil ? now < pausedUntil : false;
+  const now = Date.now();
+  const isPausedState = pausedUntil ? now < pausedUntil : false;
+  const vibrationLevel = (!isRecordingSession || !thresholds.vibrationEnabled || isPausedState || !isOverlayAllowed)
+    ? 0
+    : (slouchSeconds >= thresholds.slouchStrongTime ? 2 : (slouchSeconds >= thresholds.slouchWarningTime ? 1 : 0));
 
+  useEffect(() => {
     if (vibrationIntervalRef.current) {
       clearInterval(vibrationIntervalRef.current);
       vibrationIntervalRef.current = null;
     }
 
-    if (!isVibrationActive || isPaused) {
+    if (vibrationLevel === 0) {
       return;
     }
 
-    const isStrongAlarm = slouchSeconds >= thresholds.slouchStrongTime;
-    const isSnoozedCurrently = isSnoozed && snoozeUntil && now < snoozeUntil;
-
-    if (isSnoozedCurrently && !isStrongAlarm) {
-      return; // Silenced by snooze
-    }
-
-    if (isStrongAlarm) {
+    if (vibrationLevel === 2) {
       const runHeavyVibe = () => {
         if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
           navigator.vibrate([400, 150, 400]);
@@ -206,7 +243,7 @@ export const SlouchAlarmManager: React.FC = () => {
       };
       runHeavyVibe();
       vibrationIntervalRef.current = setInterval(runHeavyVibe, 1500);
-    } else {
+    } else if (vibrationLevel === 1) {
       const runSlightVibe = () => {
         if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
           navigator.vibrate([150]);
@@ -222,7 +259,7 @@ export const SlouchAlarmManager: React.FC = () => {
         vibrationIntervalRef.current = null;
       }
     };
-  }, [slouchSeconds, isSnoozed, snoozeUntil, pausedUntil, thresholds.vibrationEnabled, thresholds.slouchWarningTime, thresholds.slouchStrongTime]);
+  }, [vibrationLevel]);
 
   // Command Action: Snooze Alarm
   const handleSnooze = () => {
@@ -231,6 +268,9 @@ export const SlouchAlarmManager: React.FC = () => {
     }
     stopAlarmSound();
     setIsSnoozed(true);
+    // Find active level when snooze is clicked, so we can selectively snooze
+    const currentActiveLevel = slouchSeconds >= thresholds.slouchStrongTime ? 2 : 1;
+    setSnoozeLevel(currentActiveLevel);
     setSnoozeUntil(Date.now() + thresholds.snoozeDuration * 1000);
   };
 
@@ -244,6 +284,7 @@ export const SlouchAlarmManager: React.FC = () => {
     setSlouchSeconds(0);
     setIsSnoozed(false);
     setSnoozeUntil(null);
+    setSnoozeLevel(null);
   };
 
   // Remaining paused seconds calculations for the pause banner
@@ -309,7 +350,7 @@ export const SlouchAlarmManager: React.FC = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[300] bg-slate-950 flex flex-col justify-between p-8 text-white overflow-hidden select-none"
+            className="fixed inset-0 z-[300] bg-slate-950 flex flex-col justify-between p-8 pb-36 sm:pb-48 text-white overflow-hidden select-none"
           >
             {/* Ambient smartphone glowing overlays */}
             <div className="absolute inset-0 z-0">
@@ -424,14 +465,14 @@ export const SlouchAlarmManager: React.FC = () => {
                     "{thresholds.reminderMessage || 'Alignment Alert! Please sit up straight and protect your posture.'}"
                   </p>
                   <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">
-                    Angle: <span className="font-extrabold text-rose-400">{angle}°</span> (Limit: &gt;{thresholds.good}°)
+                    Angle: <span className="font-extrabold text-rose-400">{Math.round(angle)}°</span> (Limit: &gt;{thresholds.good}°)
                   </p>
                 </div>
               </div>
             </div>
 
             {/* Bottom Smartphone Actions */}
-            <div className="relative z-10 w-full max-w-sm mx-auto space-y-4 pb-4">
+            <div className="relative z-10 w-full max-w-sm mx-auto space-y-4 pb-4 mb-6 sm:mb-10">
               
               <div className="text-center">
                 <p className="text-[9.5px] font-black text-emerald-400 uppercase tracking-widest flex items-center justify-center gap-1.5 animate-pulse">
@@ -439,43 +480,25 @@ export const SlouchAlarmManager: React.FC = () => {
                 </p>
               </div>
 
-              {/* Slide to Dismiss Gesture Control + Snooze */}
-              <div className="space-y-3.5">
-                
-                {/* Snooze pill button */}
+              {/* Dual working buttons: Snooze & Stop */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Snooze button */}
                 <button
                   onClick={handleSnooze}
-                  className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white tracking-widest py-3.5 px-6 rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 shadow-lg select-none"
+                  className="bg-white/10 hover:bg-white/15 border border-white/10 text-white font-black tracking-widest py-4 px-4 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-lg select-none"
                 >
-                  <span className="text-xs font-black uppercase tracking-[0.1em]">Snooze ({thresholds.snoozeDuration}s)</span>
+                  <span className="text-sm font-black uppercase tracking-wider block">Snooze</span>
+                  <span className="text-[8px] opacity-60 font-black uppercase tracking-wider block">({thresholds.snoozeDuration}s)</span>
                 </button>
 
-                {/* Tactile iPhone-style Slide to Stop Alarm track */}
-                <div className="relative w-full h-15 bg-slate-900/40 border border-white/10 rounded-2xl flex items-center justify-center overflow-hidden backdrop-blur-lg select-none shadow-inner">
-                  
-                  {/* Shimmer label text */}
-                  <span className="text-[10px] font-black uppercase tracking-[0.25em] text-slate-300/40 animate-pulse select-none">
-                    Slide to Stop Alarm
-                  </span>
-
-                  {/* Drag Handle block */}
-                  <motion.div
-                    key={sliderKey}
-                    drag="x"
-                    dragConstraints={{ left: 0, right: 236 }}
-                    dragElastic={0}
-                    dragMomentum={false}
-                    onDrag={(event, info) => {
-                      if (info.offset.x >= 210) {
-                        handleStop();
-                      }
-                    }}
-                    className="absolute left-1.5 top-1.5 bottom-1.5 w-12 h-12 bg-white text-slate-950 rounded-xl flex items-center justify-center cursor-grab active:cursor-grabbing shadow-2xl transition-shadow border border-slate-200"
-                    whileTap={{ scale: 1.05 }}
-                  >
-                    <ChevronRight size={24} className="animate-pulse" />
-                  </motion.div>
-                </div>
+                {/* Stop Alarm button */}
+                <button
+                  onClick={handleStop}
+                  className="bg-rose-500 hover:bg-rose-600 text-white font-black tracking-widest py-4 px-4 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 shadow-xl select-none shadow-rose-950/20"
+                >
+                  <span className="text-sm font-black uppercase tracking-wider block">Stop Alarm</span>
+                  <span className="text-[8px] opacity-85 font-black uppercase tracking-wider block">Silence 10m</span>
+                </button>
               </div>
             </div>
           </motion.div>

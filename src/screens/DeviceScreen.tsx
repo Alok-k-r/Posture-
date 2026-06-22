@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, unpairDevice, setDeviceStatus } from '../store/store';
-import { Wifi, Battery, Cpu, ShieldCheck, Trash2, Smartphone, AlertCircle, RefreshCw, ChevronLeft } from 'lucide-react';
+import { RootState, unpairDevice, setDeviceStatus, setAutoRecordEnabled } from '../store/store';
+import { Wifi, Battery, Cpu, ShieldCheck, Trash2, Smartphone, AlertCircle, RefreshCw, ChevronLeft, Bluetooth, Eye } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
+import { auth } from '../lib/firebase';
 
 export const DeviceScreen: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const device = useSelector((state: RootState) => state.device);
+  const { angle, baselineAngle, autoRecordEnabled } = useSelector((state: RootState) => state.posture);
   const [isUpdating, setIsUpdating] = useState(false);
 
   const handleUnpair = () => {
@@ -23,6 +25,37 @@ export const DeviceScreen: React.FC = () => {
     setIsUpdating(true);
     setTimeout(() => setIsUpdating(false), 3000);
   };
+
+  if (!device.hasPaired) {
+    return (
+      <div className="p-6 space-y-6 pb-24 relative z-10">
+        <button onClick={() => navigate('/more')} className="flex items-center gap-2 text-slate-400 font-bold mb-2">
+          <ChevronLeft size={18} />
+          <span className="text-[10px] uppercase tracking-widest">Back to Settings</span>
+        </button>
+
+        <div className="glass p-8 rounded-[48px] shadow-premium text-center space-y-6 border-white/60 py-12">
+          <div className="w-20 h-25 bg-indigo-50/80 text-indigo-500 rounded-3xl flex items-center justify-center mx-auto shadow-indigo-100/50 shadow-lg border border-indigo-100">
+            <Cpu size={36} className="animate-pulse" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-2xl font-black text-slate-800 tracking-tight">No Hardware Paired</h2>
+            <p className="text-xs text-slate-500 leading-relaxed max-w-sm mx-auto">
+              Your account isn't coupled with a PosturePal LSM6DS3 pod. Pair your device to enable precision biofeedback and real-time posture assessments.
+            </p>
+          </div>
+
+          <button
+            onClick={() => navigate('/device-setup')}
+            className="px-6 py-4 bg-gradient-to-r from-slate-900 to-black text-white text-xs font-black uppercase tracking-widest rounded-2xl shadow-premium hover:opacity-90 active:scale-95 transition-all flex items-center justify-center gap-2 max-w-xs mx-auto w-full"
+          >
+            <Bluetooth className="w-4 h-4 animate-pulse text-indigo-400" />
+            Launch Pairing Wizard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6 pb-24 relative z-10">
@@ -84,6 +117,98 @@ export const DeviceScreen: React.FC = () => {
             <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Firmware</p>
           </div>
         </div>
+      </div>
+
+      {/* Live Stream Telemetry Monitor */}
+      <div className="glass p-6 rounded-[36px] shadow-soft space-y-4 border-indigo-200/40 bg-gradient-to-br from-indigo-50/20 to-white/95">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className={cn(
+                "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
+                device.isConnected ? "bg-emerald-400" : "bg-rose-400"
+              )}></span>
+              <span className={cn(
+                "relative inline-flex rounded-full h-2 w-2",
+                device.isConnected ? "bg-emerald-500" : "bg-rose-500"
+              )}></span>
+            </span>
+            <span className="text-[10px] font-black text-slate-700 uppercase tracking-wider">Live Telemetry Diagnostics</span>
+          </div>
+          <span className="text-[9px] font-mono px-2 py-0.5 bg-slate-100 text-slate-500 rounded border border-slate-200 uppercase font-extrabold">
+            {device.isConnected ? "Physical Stream Active" : "Stream Standby"}
+          </span>
+        </div>
+
+        <div className="bg-slate-950 rounded-2xl p-4 font-mono text-[10px] text-emerald-400 space-y-2 border border-slate-900 shadow-inner">
+          <div className="flex justify-between items-center text-[10px] border-b border-slate-800 pb-1.5 mb-1.5 font-bold">
+            <span className="text-slate-500 uppercase text-[8px] tracking-wider">Channel Metric</span>
+            <span className="text-slate-500 uppercase text-[8px] tracking-wider">Stream State</span>
+          </div>
+          <div className="flex justify-between gap-4">
+            <span className="text-slate-500 text-[9px]">📡 Firestore Stream:</span>
+            <span className="text-white text-right truncate max-w-[180px]">
+              /devices/{auth.currentUser?.uid || 'guest'}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-500 text-[9px]">📐 Spine Slouch Angle:</span>
+            <span className="text-emerald-300 font-bold">{angle}°</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-500 text-[9px]">🔄 Telemetry Updates:</span>
+            <span className="text-indigo-400">{device.isConnected ? "CONNECTED & STANDBY" : "OFFLINE / DISCONNECTED"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-500 text-[9px]">📊 Baseline Calibrated:</span>
+            <span className="text-emerald-400">{baselineAngle}°</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-500 text-[9px]">🔋 PosturePal Pod Battery:</span>
+            <span className="text-slate-200">{device.batteryLevel}%</span>
+          </div>
+        </div>
+
+        <div className="p-3 bg-indigo-50/50 rounded-xl border border-indigo-100/40 text-[9px] text-indigo-950 leading-relaxed font-bold">
+          💡 <strong>Verification Guide:</strong> When your hardware writes measurements, the changes trigger an immediate push to <code className="bg-slate-100 px-1 py-0.5 rounded text-indigo-800">/devices/{"{uid}"}</code>. The app subscribes to this doc in real-time, instantly rendering live alignment updates!
+        </div>
+      </div>
+
+      {/* Auto-Recording Configuration */}
+      <div className="glass p-6 rounded-[36px] shadow-soft space-y-4 border-slate-100 bg-white">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
+              <RefreshCw size={20} className={autoRecordEnabled ? "animate-spin" : ""} />
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-extrabold text-slate-800 tracking-tight">Auto-Record When Online</p>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">ESP32 Auto-Session trigger</p>
+            </div>
+          </div>
+          
+          <button
+            onClick={() => dispatch(setAutoRecordEnabled(!autoRecordEnabled))}
+            className={cn(
+              "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
+              autoRecordEnabled ? "bg-indigo-600" : "bg-slate-200"
+            )}
+            role="switch"
+            aria-checked={autoRecordEnabled}
+            id="toggle-auto-record"
+          >
+            <span
+              className={cn(
+                "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out",
+                autoRecordEnabled ? "translate-x-5" : "translate-x-0"
+              )}
+            />
+          </button>
+        </div>
+        
+        <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide leading-relaxed text-left">
+          When this feature is enabled, a posture recording session will automatically activate as soon as real-world posture streams are received from your physical ESP32 LSM6DS3 device!
+        </p>
       </div>
 
       {/* Security & Updates */}

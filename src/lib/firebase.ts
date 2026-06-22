@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getDatabase } from 'firebase/database';
 
 // Safely load the firebase configuration using Vite's glob import.
 // This prevents compilation failure if the user deletes the firebase-applet-config.json file.
@@ -20,9 +21,14 @@ const firebaseConfig = configKeys.length > 0
     };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Connects to the specific database configured for the applet (which contains the ESP32 synchronized telemetry data).
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+
+// Setup Firebase Realtime Database
+const rtdbUrl = firebaseConfig.databaseURL || `https://${firebaseConfig.projectId}-default-rtdb.firebaseio.com`;
+export const rtdb = getDatabase(app, rtdbUrl);
 
 export enum OperationType {
   CREATE = 'create',
