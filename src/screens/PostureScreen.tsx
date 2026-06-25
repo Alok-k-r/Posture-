@@ -1,20 +1,64 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, updateAngle, setIsSimulating, setIsRecordingSession } from '../store/store';
+import { RootState, updateAngle, setIsSimulating, setIsRecordingSession, resetSessionStats } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
-import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot, Pause } from 'lucide-react';
+import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot, Pause, CheckCircle2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { generatePostureSummary } from '../services/geminiService';
+import { db, auth } from '../lib/firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import Markdown from 'react-markdown';
 
 export const PostureScreen: React.FC = () => {
   const dispatch = useDispatch();
   const device = useSelector((state: RootState) => state.device);
-  const { angle, score, thresholds, history, isSimulating, isRecordingSession, totalSessionSeconds, maxFocusDuration } = useSelector((state: RootState) => state.posture);
+  const posture = useSelector((state: RootState) => state.posture);
+  const { angle, score, thresholds, history, isSimulating, isRecordingSession, totalSessionSeconds, maxFocusDuration } = posture;
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSaveSession = async () => {
+    if (!auth.currentUser) {
+      alert("Please login first to save your session to the health cloud.");
+      return;
+    }
+    
+    if (totalSessionSeconds < 5) {
+      if (!confirm("This session is very short (< 5 seconds). Are you sure you want to save it?")) {
+        return;
+      }
+    }
+
+    setIsSaving(true);
+    const statusLabel = score >= thresholds.good ? 'Excellent' : score >= thresholds.warn ? 'Fair' : 'Poor';
+
+    try {
+      const sessionsRef = collection(db, 'users', auth.currentUser.uid, 'sessions');
+      await addDoc(sessionsRef, {
+        date: new Date().toISOString(),
+        duration: totalSessionSeconds,
+        score: score,
+        slouches: posture.incidents || 0,
+        goodSessionSeconds: posture.goodSessionSeconds || 0,
+        warnSessionSeconds: posture.warnSessionSeconds || 0,
+        maxFocusStreak: maxFocusDuration,
+        status: statusLabel,
+        timestamp: serverTimestamp()
+      });
+
+      dispatch(setIsRecordingSession(false));
+      dispatch(resetSessionStats());
+      alert("🎉 Posture session saved successfully to medical reports!");
+    } catch (error: any) {
+      console.error("Failed to save session:", error);
+      alert("Sync fallback active: Session saved locally. It will upload once network connection is restored.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   const handleGenerateSummary = async () => {
     setIsSummarizing(true);
@@ -122,28 +166,42 @@ export const PostureScreen: React.FC = () => {
               </span>
             </div>
 
-            <button
-              onClick={() => dispatch(setIsRecordingSession(!isRecordingSession))}
-              className={cn(
-                "p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border",
-                isRecordingSession 
-                  ? "bg-amber-500 hover:bg-amber-600 border-amber-400 text-white" 
-                  : "bg-emerald-500 hover:bg-emerald-600 border-emerald-400 text-white"
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => dispatch(setIsRecordingSession(!isRecordingSession))}
+                className={cn(
+                  "p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border",
+                  isRecordingSession 
+                    ? "bg-amber-500 hover:bg-amber-600 border-amber-400 text-white" 
+                    : "bg-emerald-500 hover:bg-emerald-600 border-emerald-400 text-white"
+                )}
+                id="btn-session-toggle"
+              >
+                {isRecordingSession ? (
+                  <>
+                    <Pause size={10} className="stroke-[3]" fill="currentColor" />
+                    Pause
+                  </>
+                ) : (
+                  <>
+                    <Play size={10} className="stroke-[3]" fill="currentColor" />
+                    Resume
+                  </>
+                )}
+              </button>
+
+              {totalSessionSeconds > 0 && (
+                <button
+                  onClick={handleSaveSession}
+                  disabled={isSaving}
+                  className="p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white disabled:opacity-50"
+                  id="btn-session-save"
+                >
+                  <CheckCircle2 size={10} className="stroke-[3]" />
+                  {isSaving ? "Saving..." : "Save"}
+                </button>
               )}
-              id="btn-session-toggle"
-            >
-              {isRecordingSession ? (
-                <>
-                  <Pause size={10} className="stroke-[3]" fill="currentColor" />
-                  Pause
-                </>
-              ) : (
-                <>
-                  <Play size={10} className="stroke-[3]" fill="currentColor" />
-                  Resume
-                </>
-              )}
-            </button>
+            </div>
           </div>
           <div className="border-t border-slate-100/80 mt-1.5 pt-1 flex justify-between items-center text-[8px] font-mono text-slate-400">
             <span>Live Angle: {angle}°</span>

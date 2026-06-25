@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, unpairDevice, setDeviceStatus, setAutoRecordEnabled } from '../store/store';
-import { Wifi, Battery, Cpu, ShieldCheck, Trash2, Smartphone, AlertCircle, RefreshCw, ChevronLeft, Bluetooth, Eye } from 'lucide-react';
+import { Wifi, Battery, Cpu, ShieldCheck, Trash2, Smartphone, AlertCircle, RefreshCw, ChevronLeft, Bluetooth, Eye, Link2, Link2Off } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { auth } from '../lib/firebase';
+import { bluetoothService } from '../services/bluetoothService';
 
 export const DeviceScreen: React.FC = () => {
   const dispatch = useDispatch();
@@ -13,9 +14,33 @@ export const DeviceScreen: React.FC = () => {
   const device = useSelector((state: RootState) => state.device);
   const { angle, baselineAngle, autoRecordEnabled } = useSelector((state: RootState) => state.posture);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isConnectingBle, setIsConnectingBle] = useState(false);
+
+  const handleConnectBle = async () => {
+    setIsConnectingBle(true);
+    try {
+      const success = await bluetoothService.connect();
+      if (success) {
+        dispatch(setDeviceStatus(true));
+      } else {
+        alert("Could not establish BLE GATT connection. Make sure your pod's Bluetooth is active.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(`Bluetooth link failed: ${err.message || err}`);
+    } finally {
+      setIsConnectingBle(false);
+    }
+  };
+
+  const handleDisconnectBle = () => {
+    bluetoothService.disconnect();
+    dispatch(setDeviceStatus(false));
+  };
 
   const handleUnpair = () => {
     if (confirm("Are you sure you want to unpair PostureAI Hardware v2.4? This will stop real-time monitoring.")) {
+      bluetoothService.disconnect();
       dispatch(unpairDevice());
       navigate('/more');
     }
@@ -246,38 +271,56 @@ export const DeviceScreen: React.FC = () => {
       {/* Critical Actions */}
       <div className="space-y-4 pt-4">
         <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] ml-4">Hardware Management</h3>
+        
         {device.isConnected ? (
           <button 
-            onClick={handleUnpair}
-            className="w-full flex items-center justify-between p-6 glass border-rose-100 rounded-[32px] shadow-soft hover:bg-rose-50 transition-colors group"
+            onClick={handleDisconnectBle}
+            className="w-full flex items-center justify-between p-6 bg-slate-900 border-rose-500/20 rounded-[32px] shadow-premium hover:bg-slate-800 transition-colors group"
           >
             <div className="flex items-center gap-4">
-              <div className="w-10 h-10 bg-rose-50 text-rose-500 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
-                <Trash2 size={20} />
+              <div className="w-10 h-10 bg-indigo-500 text-white rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                <Link2Off size={20} />
               </div>
               <div className="text-left">
-                <p className="text-sm font-extrabold text-rose-600 tracking-tight">Unpair Device</p>
-                <p className="text-[9px] font-black text-rose-300 uppercase tracking-widest mt-0.5">Disconnect hardware from account</p>
+                <p className="text-sm font-extrabold text-white tracking-tight">Disconnect BLE</p>
+                <p className="text-[9px] font-black text-indigo-300 uppercase tracking-widest mt-0.5">Pause local Bluetooth Low Energy stream</p>
               </div>
             </div>
           </button>
         ) : (
           <button 
-            onClick={() => dispatch(setDeviceStatus(true))}
-            className="w-full flex items-center justify-between p-6 bg-slate-900 border-indigo-500/20 rounded-[32px] shadow-premium hover:bg-slate-800 transition-colors group"
+            onClick={handleConnectBle}
+            disabled={isConnectingBle}
+            className="w-full flex items-center justify-between p-6 bg-slate-900 border-indigo-500/20 rounded-[32px] shadow-premium hover:bg-slate-800 transition-colors group disabled:opacity-50"
           >
             <div className="flex items-center gap-4">
               <div className="w-10 h-10 bg-indigo-500 text-white rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
-                <Wifi size={20} />
+                <Link2 size={20} className={isConnectingBle ? "animate-spin" : ""} />
               </div>
               <div className="text-left">
-                <p className="text-sm font-extrabold text-white tracking-tight">Pair Device</p>
-                <p className="text-[9px] font-black text-indigo-300 uppercase tracking-widest mt-0.5">Reconnect PostureAI Pod</p>
+                <p className="text-sm font-extrabold text-white tracking-tight">
+                  {isConnectingBle ? "Connecting..." : "Connect Live BLE"}
+                </p>
+                <p className="text-[9px] font-black text-indigo-300 uppercase tracking-widest mt-0.5">Initiate direct low-latency pod stream</p>
               </div>
             </div>
-            <RefreshCw size={18} className="text-indigo-400" />
           </button>
         )}
+
+        <button 
+          onClick={handleUnpair}
+          className="w-full flex items-center justify-between p-6 glass border-rose-100 rounded-[32px] shadow-soft hover:bg-rose-50 transition-colors group"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-rose-50 text-rose-500 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+              <Trash2 size={20} />
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-extrabold text-rose-600 tracking-tight">Unpair Device</p>
+              <p className="text-[9px] font-black text-rose-300 uppercase tracking-widest mt-0.5">Disconnect hardware from account</p>
+            </div>
+          </div>
+        </button>
       </div>
 
       {/* Connection Info */}

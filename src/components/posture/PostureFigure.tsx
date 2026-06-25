@@ -26,8 +26,8 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
 
   const mainColor = getZoneColor(angle);
 
-  // Clamp angle to safe visual bounds (15 to 105 degrees) to prevent anatomical out-of-frame clipping
-  const clampedAngle = Math.max(15, Math.min(105, angle));
+  // Clamp angle to safe visual bounds (45 to 100 degrees) to prevent anatomical out-of-frame clipping or severe distortion
+  const clampedAngle = Math.max(45, Math.min(100, angle));
   const neckBending = (90 - clampedAngle); 
 
   // Colors (Light Mode Default)
@@ -69,8 +69,9 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
 
         {/* Neck & Head Group (Dynamic tilt with 75px 145px pivot) */}
         <motion.g
-          animate={{ rotate: neckBending * 0.8, transformOrigin: '75px 145px' }}
-          transition={{ type: "spring", stiffness: 40, damping: 12 }}
+          animate={{ rotate: neckBending * 0.6 }}
+          style={{ transformOrigin: '75px 145px' }}
+          transition={{ type: "spring", stiffness: 45, damping: 15 }}
         >
           {/* Neck */}
           <path
