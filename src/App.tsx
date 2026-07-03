@@ -56,9 +56,15 @@ function AppContent() {
   const dispatch = useDispatch();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      // In this app, we trust Redux persist for the demo state
-      // but we wait for Firebase to initialize to avoid rule errors
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        dispatch(login({
+          id: firebaseUser.uid,
+          name: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Guest Explorer' : 'Rahul'),
+          email: firebaseUser.email || (firebaseUser.isAnonymous ? 'guest@posturecare.health' : 'rahul@posturecare.health'),
+          photo: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
+        }));
+      }
       dispatch(setAuthLoading(false));
     });
 

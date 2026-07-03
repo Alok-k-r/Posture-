@@ -15,6 +15,7 @@ export const ThresholdScreen: React.FC = () => {
   const baselineAngle = useSelector((state: RootState) => state.posture.baselineAngle);
   const currentAngle = useSelector((state: RootState) => state.posture.angle);
   const isOnline = useSelector((state: RootState) => state.sync.isOnline);
+  const user = useSelector((state: RootState) => state.auth.user);
 
   const [local, setLocal] = useState(currentThresholds);
   const [showSuccess, setShowSuccess] = useState(false);
@@ -40,7 +41,7 @@ export const ThresholdScreen: React.FC = () => {
     }
 
     // Also sync thresholds to Firebase Realtime Database config path for physical device
-    const uid = auth.currentUser?.uid;
+    const uid = auth.currentUser?.uid || user?.id;
     if (uid) {
       const configRef = rtdbRef(rtdb, `devices/${uid}/config`);
       rtdbSet(configRef, {
@@ -73,7 +74,7 @@ export const ThresholdScreen: React.FC = () => {
         }
 
         // 2. Sync to Firestore and RTDB under user's actual UID
-        const uid = auth.currentUser?.uid;
+        const uid = auth.currentUser?.uid || user?.id;
         if (uid) {
           try {
             // Firestore device document

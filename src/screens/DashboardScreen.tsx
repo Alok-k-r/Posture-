@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState } from '../store/store';
+import { RootState, setIsRecordingSession } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
-import { Activity, Shield, Flame, AlertCircle, ChevronRight, Trophy, Star, Clock, Zap, Sparkles, Battery, Wifi, WifiOff, Bell, ShieldCheck } from 'lucide-react';
+import { Activity, Shield, Flame, AlertCircle, ChevronRight, Trophy, Star, Clock, Zap, Sparkles, Battery, Wifi, WifiOff, Bell, ShieldCheck, Play, Pause } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { analyzePosture } from '../services/geminiService';
 import { sendLocalNotification } from '../services/notificationService';
@@ -178,14 +178,38 @@ export const DashboardScreen: React.FC = () => {
           <h2 className="text-3xl font-black text-slate-800 tracking-tight leading-none">Hello, {user?.name?.split(' ')[0]}</h2>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex flex-col items-end gap-1">
-            <div className={cn(
-              "flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-colors",
-              device.isConnected ? "bg-emerald-100/50 text-emerald-600 border border-emerald-200/50" : "bg-rose-100/50 text-rose-600 border border-rose-200/50"
-            )}>
-              {device.isConnected ? <Wifi size={10} /> : <WifiOff size={10} />}
-              {device.isConnected ? "Online" : "Offline"}
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <div className={cn(
+                "flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-colors border",
+                device.isConnected ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" : "bg-rose-500/10 text-rose-600 border-rose-500/20"
+              )}>
+                {device.isConnected ? <Wifi size={10} /> : <WifiOff size={10} />}
+                {device.isConnected ? "Online" : "Offline"}
+              </div>
+              
+              <button
+                onClick={() => dispatch(setIsRecordingSession(!posture.isRecordingSession))}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all border active:scale-95",
+                  posture.isRecordingSession 
+                    ? "bg-indigo-500/10 text-indigo-600 border-indigo-500/20" 
+                    : "bg-amber-500/10 text-amber-600 border-amber-500/20"
+                )}
+              >
+                <span className="relative flex h-1.5 w-1.5">
+                  {posture.isRecordingSession && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                  )}
+                  <span className={cn(
+                    "relative inline-flex rounded-full h-1.5 w-1.5",
+                    posture.isRecordingSession ? "bg-indigo-500" : "bg-amber-500"
+                  )}></span>
+                </span>
+                {posture.isRecordingSession ? "Active" : "Paused"}
+              </button>
             </div>
+
             <button 
               onClick={() => sendLocalNotification('System Check', { body: 'Notification system is fully functional' })}
               className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[8px] font-black uppercase tracking-[0.15em] border border-slate-200 hover:bg-slate-200 transition-colors"
@@ -209,6 +233,34 @@ export const DashboardScreen: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Active Recording Standby Warning Banner */}
+      {!posture.isRecordingSession && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          onClick={() => dispatch(setIsRecordingSession(true))}
+          className="bg-amber-500/10 border border-amber-500/20 hover:border-amber-500/40 cursor-pointer p-4 rounded-[28px] flex items-center justify-between gap-4 shadow-sm transition-all active:scale-[0.99] group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-amber-500/25 text-amber-600 flex items-center justify-center shrink-0">
+              <Pause size={18} className="stroke-[3] animate-pulse" />
+            </div>
+            <div className="text-left">
+              <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Biometric Stream Suspended</h4>
+              <p className="text-[10px] text-slate-500 font-bold leading-normal mt-0.5">
+                Monitoring is paused. Live incidents, composure scoring, and focus metrics are currently not being compiled. Click to resume!
+              </p>
+            </div>
+          </div>
+          <button 
+            className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[9px] uppercase tracking-wider font-black shadow-sm transition-all flex items-center gap-1 shrink-0"
+          >
+            <Play size={10} fill="currentColor" className="stroke-[3]" />
+            Resume
+          </button>
+        </motion.div>
+      )}
 
       {/* Main Feature: Posture Analysis Hero */}
       <motion.div

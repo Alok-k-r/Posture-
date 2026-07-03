@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, updateAngle, setIsSimulating, setIsRecordingSession, resetSessionStats, setDeviceStatus, setHasPaired } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
-import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot, Pause, CheckCircle2, AlertOctagon } from 'lucide-react';
+import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot, Pause, CheckCircle2, AlertOctagon, RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { generatePostureSummary } from '../services/geminiService';
@@ -264,39 +264,36 @@ export const PostureScreen: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => dispatch(setIsRecordingSession(!isRecordingSession))}
-                className={cn(
-                  "p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border",
-                  isRecordingSession 
-                    ? "bg-amber-500 hover:bg-amber-600 border-amber-400 text-white" 
-                    : "bg-emerald-500 hover:bg-emerald-600 border-emerald-400 text-white"
-                )}
-                id="btn-session-toggle"
-              >
-                {isRecordingSession ? (
-                  <>
+              {!isRecordingSession ? (
+                <button
+                  onClick={() => dispatch(setIsRecordingSession(true))}
+                  className="p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border bg-emerald-500 hover:bg-emerald-600 border-emerald-400 text-white"
+                  id="btn-session-toggle"
+                >
+                  <Play size={10} className="stroke-[3]" fill="currentColor" />
+                  {totalSessionSeconds > 0 ? "Resume" : "Start"}
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => dispatch(setIsRecordingSession(false))}
+                    className="p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border bg-amber-500 hover:bg-amber-600 border-amber-400 text-white"
+                    id="btn-session-pause"
+                  >
                     <Pause size={10} className="stroke-[3]" fill="currentColor" />
                     Pause
-                  </>
-                ) : (
-                  <>
-                    <Play size={10} className="stroke-[3]" fill="currentColor" />
-                    Resume
-                  </>
-                )}
-              </button>
+                  </button>
 
-              {totalSessionSeconds > 0 && (
-                <button
-                  onClick={handleSaveSession}
-                  disabled={isSaving}
-                  className="p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white disabled:opacity-50"
-                  id="btn-session-save"
-                >
-                  <CheckCircle2 size={10} className="stroke-[3]" />
-                  {isSaving ? "Saving..." : "Save"}
-                </button>
+                  <button
+                    onClick={handleSaveSession}
+                    disabled={isSaving}
+                    className="p-2 px-3 rounded-xl flex items-center justify-center gap-1.5 text-[9.5px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white disabled:opacity-50"
+                    id="btn-session-save"
+                  >
+                    <CheckCircle2 size={10} className="stroke-[3]" />
+                    {isSaving ? "Saving..." : "Save"}
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -322,14 +319,20 @@ export const PostureScreen: React.FC = () => {
              <motion.circle
                cx="160" cy="160" r="145"
                fill="none"
-               stroke={getStatusColor(angle)}
                strokeWidth="14"
                strokeLinecap="round"
                strokeDasharray="911"
                initial={{ strokeDashoffset: 911 }}
-               animate={{ strokeDashoffset: 911 - (911 * score) / 100 }}
-               transition={{ duration: 1.5, ease: "circOut" }}
-               style={{ filter: `drop-shadow(0 0 15px ${getStatusColor(angle)}44)` }}
+               animate={{ 
+                 strokeDashoffset: 911 - (911 * score) / 100,
+                 stroke: getStatusColor(angle),
+                 filter: `drop-shadow(0 0 15px ${getStatusColor(angle)}44)`
+               }}
+               transition={{ 
+                 strokeDashoffset: { type: "spring", stiffness: 35, damping: 15 },
+                 stroke: { duration: 1.5, ease: "easeInOut" },
+                 filter: { duration: 1.5, ease: "easeInOut" }
+               }}
              />
           </svg>
 
@@ -365,33 +368,72 @@ export const PostureScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* AI Posture Summary Action */}
+      {/* Premium Posture AI Clinician Card */}
       <div className="px-1">
-        <button 
-          onClick={handleGenerateSummary}
-          disabled={isSummarizing}
-          className="w-full bg-slate-900 border border-slate-800 text-white p-6 rounded-[32px] shadow-premium flex items-center justify-between group transition-all active:scale-[0.98] overflow-hidden relative"
+        <motion.div
+          whileHover={{ y: -3, scale: 1.01 }}
+          whileTap={{ scale: 0.99 }}
+          className="relative rounded-[36px] overflow-hidden p-6 bg-gradient-to-br from-indigo-950 via-slate-900 to-violet-950 border border-indigo-500/20 shadow-2xl shadow-indigo-950/30 group"
         >
-          <div className="absolute top-0 right-0 p-4 opacity-10 -rotate-12 translate-x-4 translate-y-[-10px] group-hover:rotate-0 transition-transform">
-            <Bot size={100} />
-          </div>
-          <div className="flex items-center gap-5 relative z-10">
-            <div className="w-14 h-14 rounded-2xl bg-premium-indigo flex items-center justify-center shadow-lg shadow-indigo-500/20">
+          {/* Neon Glow Effects */}
+          <div className="absolute -top-12 -right-12 w-32 h-32 bg-indigo-500/20 blur-2xl rounded-full group-hover:bg-indigo-500/30 transition-all duration-500" />
+          <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-violet-500/10 blur-2xl rounded-full" />
+          
+          {/* Subtle grid pattern background */}
+          <div className="absolute inset-0 bg-[radial-gradient(#ffffff08_1px,transparent_1px)] [background-size:16px_16px] opacity-60" />
+
+          <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div className="flex items-start gap-4">
+              {/* Icon Container with glowing ring */}
+              <div className="relative">
+                <div className="absolute inset-0 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-2xl blur-md opacity-50 group-hover:opacity-85 transition-opacity" />
+                <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center border border-white/10 shadow-lg text-white">
+                  {isSummarizing ? (
+                    <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <Brain className="w-7 h-7 text-white animate-pulse" />
+                  )}
+                </div>
+              </div>
+
+              <div className="text-left space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-[9px] font-black text-indigo-300 uppercase tracking-widest flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping" />
+                    Gemini Clinical AI
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">v3.5 Flash</span>
+                </div>
+                <h4 className="text-xl font-black text-white tracking-tight group-hover:text-indigo-200 transition-colors">
+                  Posture AI Clinician
+                </h4>
+                <p className="text-xs text-slate-400 font-medium leading-relaxed max-w-sm">
+                  Generate an intelligent, real-time posture analysis report evaluating your vertebral S-curve, fatigue coefficients, and active streaks.
+                </p>
+              </div>
+            </div>
+
+            {/* Action Trigger Button inside card */}
+            <button
+              onClick={handleGenerateSummary}
+              disabled={isSummarizing}
+              className="px-6 py-3.5 rounded-2xl bg-white text-slate-900 font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 active:scale-95 transition-all flex items-center justify-center gap-2.5 shadow-lg shadow-white/5 border border-white/20 self-start md:self-auto min-w-[160px] disabled:opacity-50"
+            >
               {isSummarizing ? (
-                <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <>
+                  <RefreshCw size={12} className="animate-spin" />
+                  Analyzing...
+                </>
               ) : (
-                <Sparkles size={26} className="text-white" />
+                <>
+                  <Sparkles size={12} className="text-indigo-600 animate-bounce" />
+                  Get Report
+                  <ChevronRight size={12} className="stroke-[3]" />
+                </>
               )}
-            </div>
-            <div className="text-left">
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Intelligent Analysis</p>
-              <h4 className="text-xl font-extrabold tracking-tight">Generate Summary</h4>
-            </div>
+            </button>
           </div>
-          <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center group-hover:translate-x-1 transition-transform relative z-10">
-            <ChevronRight size={20} />
-          </div>
-        </button>
+        </motion.div>
       </div>
 
       {/* AI Summary Modal */}
