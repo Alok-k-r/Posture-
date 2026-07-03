@@ -1,28 +1,56 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, updateAngle, setIsSimulating, setIsRecordingSession, resetSessionStats } from '../store/store';
+import { RootState, updateAngle, setIsSimulating, setIsRecordingSession, resetSessionStats, setDeviceStatus, setHasPaired } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
-import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot, Pause, CheckCircle2 } from 'lucide-react';
+import { Play, Square, Info, ChevronRight, Activity, Clock, Shield, Zap, Wind, User, Sparkles, X, Brain, Bot, Pause, CheckCircle2, AlertOctagon } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { generatePostureSummary } from '../services/geminiService';
 import { db, auth } from '../lib/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, query, orderBy, limit, getDocs } from 'firebase/firestore';
 import Markdown from 'react-markdown';
 
 export const PostureScreen: React.FC = () => {
   const dispatch = useDispatch();
   const device = useSelector((state: RootState) => state.device);
   const posture = useSelector((state: RootState) => state.posture);
-  const { angle, score, thresholds, history, isSimulating, isRecordingSession, totalSessionSeconds, maxFocusDuration } = posture;
+  const user = useSelector((state: RootState) => state.auth.user);
+  const { angle, score, thresholds, history, isSimulating, isRecordingSession, totalSessionSeconds, maxFocusDuration, incidents } = posture;
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  const [autoOscillate, setAutoOscillate] = useState(true);
+  const simulationDirRef = useRef(-1);
+  const angleRef = useRef(angle);
+
+  useEffect(() => {
+    angleRef.current = angle;
+  }, [angle]);
+
+  // Auto-oscillation simulation effect
+  useEffect(() => {
+    if (!isSimulating || !autoOscillate) return;
+
+    const interval = setInterval(() => {
+      let nextAngle = angleRef.current + simulationDirRef.current * 4;
+      if (nextAngle <= 42) {
+        nextAngle = 42;
+        simulationDirRef.current = 1;
+      } else if (nextAngle >= 92) {
+        nextAngle = 92;
+        simulationDirRef.current = -1;
+      }
+      dispatch(updateAngle(nextAngle));
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [isSimulating, autoOscillate, dispatch]);
+
   const handleSaveSession = async () => {
-    if (!auth.currentUser) {
-      alert("Please login first to save your session to the health cloud.");
+    if (!user) {
+      alert("Please login first to save your session.");
       return;
     }
     
@@ -36,25 +64,56 @@ export const PostureScreen: React.FC = () => {
     const statusLabel = score >= thresholds.good ? 'Excellent' : score >= thresholds.warn ? 'Fair' : 'Poor';
 
     try {
-      const sessionsRef = collection(db, 'users', auth.currentUser.uid, 'sessions');
-      await addDoc(sessionsRef, {
-        date: new Date().toISOString(),
+      // 1. Save locally so that even in demo/offline mode, the user can see it in their reports screen instantly
+      const localKey = `posture_sessions_${user.id}`;
+      const sessionData = {
+        id: 'local-' + Date.now(),
+        date: posture.sessionStartTime || new Date().toISOString(),
+        startTime: posture.sessionStartTime || new Date().toISOString(),
+        endTime: new Date().toISOString(),
         duration: totalSessionSeconds,
         score: score,
-        slouches: posture.incidents || 0,
+        slouches: incidents || 0,
         goodSessionSeconds: posture.goodSessionSeconds || 0,
         warnSessionSeconds: posture.warnSessionSeconds || 0,
         maxFocusStreak: maxFocusDuration,
         status: statusLabel,
-        timestamp: serverTimestamp()
-      });
+      };
+
+      try {
+        const existingLocal = JSON.parse(localStorage.getItem(localKey) || '[]');
+        existingLocal.unshift(sessionData);
+        localStorage.setItem(localKey, JSON.stringify(existingLocal));
+      } catch (localErr) {
+        console.error("Failed to write session to localStorage:", localErr);
+      }
+
+      // 2. Try to save to Firestore if auth.currentUser is available
+      if (auth.currentUser) {
+        const sessionsRef = collection(db, 'users', auth.currentUser.uid, 'sessions');
+        await addDoc(sessionsRef, {
+          date: sessionData.date,
+          startTime: sessionData.startTime,
+          endTime: sessionData.endTime,
+          duration: totalSessionSeconds,
+          score: score,
+          slouches: incidents || 0,
+          goodSessionSeconds: posture.goodSessionSeconds || 0,
+          warnSessionSeconds: posture.warnSessionSeconds || 0,
+          maxFocusStreak: maxFocusDuration,
+          status: statusLabel,
+          timestamp: serverTimestamp()
+        });
+      }
 
       dispatch(setIsRecordingSession(false));
       dispatch(resetSessionStats());
       alert("🎉 Posture session saved successfully to medical reports!");
     } catch (error: any) {
-      console.error("Failed to save session:", error);
+      console.error("Failed to save session to cloud:", error);
       alert("Sync fallback active: Session saved locally. It will upload once network connection is restored.");
+      dispatch(setIsRecordingSession(false));
+      dispatch(resetSessionStats());
     } finally {
       setIsSaving(false);
     }
@@ -63,7 +122,44 @@ export const PostureScreen: React.FC = () => {
   const handleGenerateSummary = async () => {
     setIsSummarizing(true);
     try {
-      const result = await generatePostureSummary(history, score);
+      const list: any[] = [];
+
+      // 1. Fetch local sessions
+      if (user) {
+        try {
+          const localKey = `posture_sessions_${user.id}`;
+          const localSessions = JSON.parse(localStorage.getItem(localKey) || '[]');
+          list.push(...localSessions);
+        } catch (localErr) {
+          console.error('Error loading local sessions for summary:', localErr);
+        }
+      }
+
+      // 2. Fetch cloud sessions if online
+      if (auth.currentUser) {
+        try {
+          const q = query(
+            collection(db, 'users', auth.currentUser.uid, 'sessions'),
+            orderBy('date', 'desc'),
+            limit(15)
+          );
+          const querySnapshot = await getDocs(q);
+          querySnapshot.forEach((doc) => {
+            const data = doc.data();
+            const isDuplicate = list.some(s => s.id === doc.id || (s.date === data.date && s.duration === data.duration));
+            if (!isDuplicate) {
+              list.push({ id: doc.id, ...data });
+            }
+          });
+        } catch (err) {
+          console.error('Error fetching Firestore sessions for summary:', err);
+        }
+      }
+
+      // 3. Sort chronologically (oldest to newest) to let AI evaluate progression through the day
+      list.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      const result = await generatePostureSummary(history, score, list);
       setSummary(result);
     } catch (error) {
       console.error('Summary generation failed:', error);
@@ -134,6 +230,7 @@ export const PostureScreen: React.FC = () => {
     { label: 'Sitting Duration', value: formatDuration(totalSessionSeconds), icon: Clock, color: 'text-orange' },
     { label: 'Fatigue Risk', value: fatigue.value, icon: Activity, color: fatigue.color },
     { label: 'Focus Max Streak', value: formatDuration(maxFocusDuration), icon: (props: any) => <Zap size={14} {...props} />, color: 'text-purple-500', isZap: true },
+    { label: 'Slouch Incidents', value: `${incidents || 0} times`, icon: AlertOctagon, color: 'text-rose-500' },
   ];
 
   return (
@@ -242,7 +339,7 @@ export const PostureScreen: React.FC = () => {
                 <PostureFigure size={200} angle={angle} />
                 {/* Floating Micro Score Badge */}
                 <motion.div 
-                   key={Math.round(score)}
+                   key="score-badge"
                    initial={{ opacity: 0, scale: 0.8 }}
                    animate={{ opacity: 1, scale: 1 }}
                    className="absolute -top-4 -right-4 bg-white/90 backdrop-blur-xl border border-white shadow-premium px-4 py-2 rounded-2xl flex items-center gap-2"
@@ -385,6 +482,100 @@ export const PostureScreen: React.FC = () => {
             <ChevronRight size={16} className="text-slate-500 group-hover:translate-x-1 transition-transform" />
           </div>
         </div>
+      </div>
+
+      {/* Biometric Simulator */}
+      <div className="bg-white border border-slate-100 p-6 rounded-[32px] shadow-soft space-y-4">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className={cn(
+              "w-10 h-10 rounded-2xl flex items-center justify-center transition-colors",
+              isSimulating ? "bg-indigo-50 text-indigo-600" : "bg-slate-50 text-slate-400"
+            )}>
+              <Sparkles size={18} className={isSimulating ? "animate-pulse" : ""} />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">Biometric Simulator</h3>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Test Posture & Incidents</p>
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              const targetSim = !isSimulating;
+              dispatch(setIsSimulating(targetSim));
+              dispatch(setDeviceStatus(targetSim));
+              dispatch(setHasPaired(targetSim));
+            }}
+            className={cn(
+              "p-2 px-3.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border",
+              isSimulating 
+                ? "bg-indigo-50 border-indigo-100 text-indigo-600 hover:bg-indigo-100/60" 
+                : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+            )}
+            id="btn-toggle-sim"
+          >
+            {isSimulating ? "Simulator ON" : "Turn On Simulator"}
+          </button>
+        </div>
+
+        {isSimulating && (
+          <div className="pt-2 border-t border-slate-100 space-y-4">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                Auto-Fluctuate Angle
+              </label>
+              <button
+                onClick={() => setAutoOscillate(!autoOscillate)}
+                className={cn(
+                  "p-1.5 px-3 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all active:scale-95 border",
+                  autoOscillate 
+                    ? "bg-emerald-50 border-emerald-100 text-emerald-600" 
+                    : "bg-white border-slate-200 text-slate-400"
+                )}
+                id="btn-toggle-oscillate"
+              >
+                {autoOscillate ? "Oscillating (Every 2s)" : "Manual Mode"}
+              </button>
+            </div>
+
+            {/* Warning / Help note */}
+            <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
+              {autoOscillate 
+                ? "The simulator is automatically fluctuating the angle between 42° and 92° to trigger posture transitions (underwarn, upright) and count slouch incidents dynamically." 
+                : "Adjust the manual slider below to test specific postural tilt positions. Pull below 65° to trigger a slouch warning alarm and count an incident!"}
+            </p>
+
+            {/* Slider */}
+            <div className="space-y-2 pt-1">
+              <div className="flex justify-between items-center text-[10px] font-mono text-slate-400 font-black">
+                <span>Critical (&lt; {thresholds.warn}°)</span>
+                <span className={cn(
+                  "text-xs font-black",
+                  angle < thresholds.warn ? "text-rose-500" : "text-emerald-500"
+                )}>{Math.round(angle)}°</span>
+                <span>Optimal (&gt; {thresholds.good}°)</span>
+              </div>
+              <input
+                type="range"
+                min="30"
+                max="100"
+                value={Math.round(angle)}
+                disabled={autoOscillate}
+                onChange={(e) => {
+                  dispatch(updateAngle(Number(e.target.value)));
+                }}
+                className={cn(
+                  "w-full h-1.5 rounded-lg appearance-none cursor-pointer focus:outline-none transition-all",
+                  autoOscillate ? "bg-slate-100 opacity-60 cursor-not-allowed" : "bg-slate-200 hover:bg-slate-300"
+                )}
+                style={{
+                  background: `linear-gradient(to right, #ef4444 0%, #f97316 45%, #22c55e 100%)`
+                }}
+                id="slider-sim-angle"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Trend Graph */}

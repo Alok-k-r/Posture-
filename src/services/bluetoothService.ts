@@ -1,18 +1,26 @@
 import { store, updateAngle, updateBattery, setDeviceStatus, setHasPaired } from '../store/store';
 
-// BLE GATT Profile Constants
-export const POSTURE_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
-export const TELEMETRY_CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+// BLE GATT Profile Constants - Aligned with PosturePal ESP32 V2.1.1-FIXED firmware
+export const POSTURE_SERVICE_UUID = '00001830-0000-1000-8000-00805f9b34fb';
+export const CHARACTERISTIC_ANGLE_UUID = '00002a5a-0000-1000-8000-00805f9b34fb';
+export const CHARACTERISTIC_BATT_UUID = '00002a19-0000-1000-8000-00805f9b34fb';
+export const CHARACTERISTIC_CONFIG_UUID = '00002a5c-0000-1000-8000-00805f9b34fb';
 
 class BluetoothService {
   private device: any = null;
   private server: any = null;
-  private characteristic: any = null;
+  private angleCharacteristic: any = null;
+  private batteryCharacteristic: any = null;
+  private configCharacteristic: any = null;
   private reconnectTimeout: any = null;
   private isConnecting: boolean = false;
 
   public isSupported(): boolean {
     return typeof navigator !== 'undefined' && ('bluetooth' in navigator || (navigator as any).bluetooth !== undefined);
+  }
+
+  public isConnected(): boolean {
+    return this.server && this.server.connected;
   }
 
   public async connect(): Promise<boolean> {
@@ -38,9 +46,14 @@ class BluetoothService {
       const success = await this.establishGattConnection();
       this.isConnecting = false;
       return success;
-    } catch (error) {
+    } catch (error: any) {
       this.isConnecting = false;
-      console.error('BLE connection request cancelled or failed:', error);
+      const errMsg = String(error?.message || error);
+      if (errMsg.includes('permissions policy') || errMsg.includes('disallowed') || errMsg.includes('SecurityError') || errMsg.includes('User cancelled')) {
+        console.warn('BLE connection notice (sandbox policy or user bypass):', errMsg);
+      } else {
+        console.error('BLE connection request cancelled or failed:', error);
+      }
       throw error;
     }
   }
@@ -57,13 +70,36 @@ class BluetoothService {
       console.log('Fetching Primary Service...');
       const service = await server.getPrimaryService(POSTURE_SERVICE_UUID);
 
-      console.log('Fetching Telemetry Characteristic...');
-      const characteristic = await service.getCharacteristic(TELEMETRY_CHARACTERISTIC_UUID);
-      this.characteristic = characteristic;
+      console.log('Fetching Angle/Pitch Characteristic...');
+      try {
+        const angleChar = await service.getCharacteristic(CHARACTERISTIC_ANGLE_UUID);
+        this.angleCharacteristic = angleChar;
+        await angleChar.startNotifications();
+        angleChar.addEventListener('characteristicvaluechanged', this.handleAngleNotification);
+        console.log('✅ Angle characteristic notifications started.');
+      } catch (err) {
+        console.error('Failed to bind Angle Characteristic:', err);
+      }
 
-      console.log('Starting Telemetry Notifications...');
-      await characteristic.startNotifications();
-      characteristic.addEventListener('characteristicvaluechanged', this.handleTelemetryNotification);
+      console.log('Fetching Battery Characteristic...');
+      try {
+        const battChar = await service.getCharacteristic(CHARACTERISTIC_BATT_UUID);
+        this.batteryCharacteristic = battChar;
+        await battChar.startNotifications();
+        battChar.addEventListener('characteristicvaluechanged', this.handleBatteryNotification);
+        console.log('✅ Battery characteristic notifications started.');
+      } catch (err) {
+        console.error('Failed to bind Battery Characteristic:', err);
+      }
+
+      console.log('Fetching Config Characteristic...');
+      try {
+        const configChar = await service.getCharacteristic(CHARACTERISTIC_CONFIG_UUID);
+        this.configCharacteristic = configChar;
+        console.log('✅ Config characteristic bound.');
+      } catch (err) {
+        console.warn('Config characteristic not found or not writable:', err);
+      }
 
       // Successfully paired and connected
       store.dispatch(setHasPaired(true));
@@ -77,43 +113,59 @@ class BluetoothService {
     }
   }
 
-  private handleTelemetryNotification = (event: Event) => {
+  private handleAngleNotification = (event: Event) => {
     const target = event.target as any;
     if (!target || !target.value) return;
 
     try {
-      const decoder = new TextDecoder('utf-8');
-      const rawText = decoder.decode(target.value).trim();
-      console.log('📡 BLE Received Raw Packet:', rawText);
-
-      // Parse payload format:
-      // Format 1: JSON payload {"angle": 82, "battery": 95}
-      // Format 2: Comma-separated "82,95" (extremely lightweight for ESP32)
-      // Format 3: Raw integer "82"
-      if (rawText.startsWith('{') && rawText.endsWith('}')) {
-        const payload = JSON.parse(rawText);
-        if (typeof payload.angle === 'number') {
-          store.dispatch(updateAngle(payload.angle));
-        }
-        if (typeof payload.battery === 'number' || typeof payload.batteryLevel === 'number') {
-          store.dispatch(updateBattery(payload.battery ?? payload.batteryLevel));
-        }
-      } else if (rawText.includes(',')) {
-        const parts = rawText.split(',');
-        const angle = parseInt(parts[0], 10);
-        const battery = parseInt(parts[1], 10);
-        if (!isNaN(angle)) store.dispatch(updateAngle(angle));
-        if (!isNaN(battery)) store.dispatch(updateBattery(battery));
-      } else {
-        const angle = parseInt(rawText, 10);
-        if (!isNaN(angle)) {
-          store.dispatch(updateAngle(angle));
-        }
-      }
+      const view = target.value; // DataView
+      // ESP32 sends 2-byte signed integer (int16_t) little-endian
+      const angle = view.getInt16(0, true);
+      store.dispatch(updateAngle(angle));
+      console.log('📡 BLE Received Pitch Angle (binary):', angle);
     } catch (err) {
-      console.warn('Failed to parse telemetry packet:', err);
+      console.warn('Failed to parse angle binary packet:', err);
     }
   };
+
+  private handleBatteryNotification = (event: Event) => {
+    const target = event.target as any;
+    if (!target || !target.value) return;
+
+    try {
+      const view = target.value; // DataView
+      // ESP32 sends 1-byte unsigned integer (uint8_t)
+      const battery = view.getUint8(0);
+      store.dispatch(updateBattery(battery));
+      console.log('📡 BLE Received Battery Level (binary):', battery);
+    } catch (err) {
+      console.warn('Failed to parse battery binary packet:', err);
+    }
+  };
+
+  public async writeConfig(threshold: number, delayMs: number, baseline?: number): Promise<boolean> {
+    if (!this.configCharacteristic) {
+      console.warn('BLE Config Characteristic is not connected or available.');
+      return false;
+    }
+    try {
+      const payload: any = {
+        t: threshold,
+        d: delayMs
+      };
+      if (typeof baseline === 'number') {
+        payload.b = baseline;
+      }
+      const encoder = new TextEncoder();
+      const data = encoder.encode(JSON.stringify(payload));
+      await this.configCharacteristic.writeValue(data);
+      console.log('✅ Synchronized config updates directly to ESP32 Flash Preferences:', payload);
+      return true;
+    } catch (err) {
+      console.error('Failed to write configuration updates to ESP32 over BLE:', err);
+      return false;
+    }
+  }
 
   private handleDisconnected = () => {
     console.warn('⚠️ PosturePal BLE GATT disconnected!');
@@ -151,11 +203,19 @@ class BluetoothService {
       this.reconnectTimeout = null;
     }
 
-    if (this.characteristic) {
-      this.characteristic.removeEventListener('characteristicvaluechanged', this.handleTelemetryNotification);
-      this.characteristic.stopNotifications().catch(() => {});
-      this.characteristic = null;
+    if (this.angleCharacteristic) {
+      this.angleCharacteristic.removeEventListener('characteristicvaluechanged', this.handleAngleNotification);
+      this.angleCharacteristic.stopNotifications().catch(() => {});
+      this.angleCharacteristic = null;
     }
+
+    if (this.batteryCharacteristic) {
+      this.batteryCharacteristic.removeEventListener('characteristicvaluechanged', this.handleBatteryNotification);
+      this.batteryCharacteristic.stopNotifications().catch(() => {});
+      this.batteryCharacteristic = null;
+    }
+
+    this.configCharacteristic = null;
 
     if (this.device) {
       this.device.removeEventListener('gattserverdisconnected', this.handleDisconnected);

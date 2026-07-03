@@ -9,6 +9,7 @@ import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 
 export const ReportsScreen: React.FC = () => {
   const { thresholds, score } = useSelector((state: RootState) => state.posture);
+  const user = useSelector((state: RootState) => state.auth.user);
   const [range, setRange] = useState<'daily' | 'weekly'>('weekly');
   const [isGenerating, setIsGenerating] = useState(false);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -16,29 +17,51 @@ export const ReportsScreen: React.FC = () => {
 
   useEffect(() => {
     const fetchSessions = async () => {
-      if (!auth.currentUser) return;
       setIsLoading(true);
-      try {
-        const q = query(
-          collection(db, 'users', auth.currentUser.uid, 'sessions'),
-          orderBy('date', 'desc'),
-          limit(30)
-        );
-        const querySnapshot = await getDocs(q);
-        const list: any[] = [];
-        querySnapshot.forEach((doc) => {
-          list.push({ id: doc.id, ...doc.data() });
-        });
-        setSessions(list);
-      } catch (err) {
-        console.error('Error fetching sessions:', err);
-      } finally {
-        setIsLoading(false);
+      const list: any[] = [];
+
+      // 1. First, retrieve locally stored sessions for the current logged-in user
+      if (user) {
+        try {
+          const localKey = `posture_sessions_${user.id}`;
+          const localSessions = JSON.parse(localStorage.getItem(localKey) || '[]');
+          list.push(...localSessions);
+        } catch (localErr) {
+          console.error('Error loading local sessions:', localErr);
+        }
       }
+
+      // 2. Next, load cloud-synced sessions if Firebase Auth is connected
+      if (auth.currentUser) {
+        try {
+          const q = query(
+            collection(db, 'users', auth.currentUser.uid, 'sessions'),
+            orderBy('date', 'desc'),
+            limit(30)
+          );
+          const querySnapshot = await getDocs(q);
+          querySnapshot.forEach((doc) => {
+            const data = doc.data();
+            // Prevent duplicates if already loaded locally
+            const isDuplicate = list.some(s => s.id === doc.id || (s.date === data.date && s.duration === data.duration));
+            if (!isDuplicate) {
+              list.push({ id: doc.id, ...data });
+            }
+          });
+        } catch (err) {
+          console.error('Error fetching Firestore sessions:', err);
+        }
+      }
+
+      // 3. Sort by date descending
+      list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      setSessions(list);
+      setIsLoading(false);
     };
 
     fetchSessions();
-  }, []);
+  }, [user]);
 
   const handleDownload = () => {
     setIsGenerating(true);

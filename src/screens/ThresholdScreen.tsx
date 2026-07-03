@@ -4,6 +4,10 @@ import { useSelector, useDispatch } from 'react-redux';
 import { RootState, setThresholds, recalibrateBaseline, addToSyncQueue } from '../store/store';
 import { Star, AlertTriangle, XCircle, Save, RotateCcw, Info, Bell, Zap, Sliders, Target } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { bluetoothService } from '../services/bluetoothService';
+import { db, auth, rtdb } from '../lib/firebase';
+import { doc, setDoc } from 'firebase/firestore';
+import { ref as rtdbRef, set as rtdbSet } from 'firebase/database';
 
 export const ThresholdScreen: React.FC = () => {
   const dispatch = useDispatch();
@@ -27,6 +31,26 @@ export const ThresholdScreen: React.FC = () => {
       timestamp: new Date().toISOString()
     }));
 
+    // If connected to physical ESP32 pod via BLE, write active parameters to its flash preferences
+    if (bluetoothService.isConnected()) {
+      // local.alertAngle is the threshold angle; alertDelay is the warning confirmation timer in seconds
+      bluetoothService.writeConfig(local.alertAngle, local.alertDelay * 1000, baselineAngle).catch((err) => {
+        console.warn('Could not update ESP32 config over active BLE link:', err);
+      });
+    }
+
+    // Also sync thresholds to Firebase Realtime Database config path for physical device
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      const configRef = rtdbRef(rtdb, `devices/${uid}/config`);
+      rtdbSet(configRef, {
+        alertAngle: local.alertAngle,
+        alertDelayMs: local.alertDelay * 1000,
+        vibrationEnabled: local.vibrationEnabled,
+        reminderMessage: local.reminderMessage
+      }).catch(err => console.warn('Could not update RTDB config:', err));
+    }
+
     setShowSuccess(true);
     setTimeout(() => setShowSuccess(false), 3000);
   };
@@ -34,11 +58,44 @@ export const ThresholdScreen: React.FC = () => {
   const handleRecalibrate = () => {
     setIsCalibrating(true);
     let count = 3;
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       count -= 1;
       if (count <= 0) {
         clearInterval(interval);
-        dispatch(recalibrateBaseline(currentAngle));
+        const calibratedAngle = Math.round(currentAngle);
+        dispatch(recalibrateBaseline(calibratedAngle));
+
+        // 1. Sync BLE if connected
+        if (bluetoothService.isConnected()) {
+          bluetoothService.writeConfig(local.alertAngle, local.alertDelay * 1000, calibratedAngle).catch((err) => {
+            console.warn('Could not write calibration baseline to ESP32 over BLE:', err);
+          });
+        }
+
+        // 2. Sync to Firestore and RTDB under user's actual UID
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          try {
+            // Firestore device document
+            const deviceRef = doc(db, 'devices', uid);
+            await setDoc(deviceRef, {
+              baselineAngle: calibratedAngle,
+              lastSync: new Date().toISOString()
+            }, { merge: true });
+
+            // RTDB current/config path
+            const currentRef = rtdbRef(rtdb, `devices/${uid}/current`);
+            await rtdbSet(currentRef, {
+              baselineAngle: calibratedAngle,
+              lastCalibrated: new Date().toISOString()
+            });
+
+            console.log('✅ Physical device calibration synchronized to Firestore and Realtime Database.');
+          } catch (err) {
+            console.error('Failed to sync physical device calibration to cloud database:', err);
+          }
+        }
+
         setIsCalibrating(false);
       }
     }, 1000);

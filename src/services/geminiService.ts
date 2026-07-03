@@ -1,68 +1,58 @@
-import { GoogleGenAI } from "@google/genai";
-
-let aiClient: GoogleGenAI | null = null;
-
-const getAI = () => {
-  if (!aiClient) {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) {
-      throw new Error("GEMINI_API_KEY is not defined. Please configure it in the Secrets settings.");
+const getApiUrl = (path: string): string => {
+  const appUrl = process.env.APP_URL;
+  if (appUrl && appUrl !== "MY_APP_URL" && !appUrl.includes("localhost")) {
+    const base = appUrl.endsWith("/") ? appUrl.slice(0, -1) : appUrl;
+    // If running in Capacitor, local files, or non-standard WebView origin
+    if (
+      typeof window !== "undefined" &&
+      (window.location.origin.includes("localhost") ||
+       window.location.origin.includes("capacitor") ||
+       window.location.origin.startsWith("file://"))
+    ) {
+      return `${base}${path}`;
     }
-    aiClient = new GoogleGenAI({
-      apiKey: key,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
   }
-  return aiClient;
+  return path;
 };
 
 export const analyzePosture = async (angle: number, history: number[]) => {
   try {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: `The patient's current posture angle is ${angle.toFixed(0)} degrees. 
-History of last 10 readings: ${history.slice(0, 10).map(n => n.toFixed(0)).join(', ')}.
-Provide a crisp, 1-sentence medical insight for spinal alignment.`,
-      config: {
-        systemInstruction: "You are a professional Physiotherapist. Be extremely concise. Avoid fluff. Focus on immediate biomechanical correction.",
-      }
+    const response = await fetch(getApiUrl("/api/gemini/analyze"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ angle, history }),
     });
 
-    return response.text;
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.text;
   } catch (error) {
     console.error("Gemini analysis error:", error);
     return "Keep your chin tucked and shoulders relaxed.";
   }
 };
 
-export const generatePostureSummary = async (history: number[], score: number) => {
+export const generatePostureSummary = async (history: number[], score: number, sessions?: any[]) => {
   try {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: `Give me a friendly and simple summary of how I sat today.
-Data for you:
-- My Score: ${score}%
-- My Recent Moves (Last 50): ${history.join(', ')}
-
-Please:
-1. Start with a 1-sentence supportive opening (e.g., "You're doing great!" or "Let's focus a bit more on sitting tall").
-2. Give 3 simple bullet points:
-   - Notice any patterns (e.g., "You tend to lean forward after about 15 minutes").
-   - Mention when I started getting tired (e.g., "Your posture dipped a bit towards the end").
-   - Give one easy-to-do tip for tomorrow.
-Keep the language warm, simple, and very easy to understand. No medical jargon.`,
-      config: {
-        systemInstruction: "You are a friendly, encouraging personal Posture Coach. Use simple, everyday language. Be supportive and focus on small, easy improvements rather than clinical/medical terms.",
-      }
+    const response = await fetch(getApiUrl("/api/gemini/summary"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ history, score, sessions }),
     });
 
-    return response.text;
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.text;
   } catch (error) {
     console.error("Gemini summary error:", error);
     return "I couldn't put your summary together right now. Let's keep working on that posture!";
@@ -71,18 +61,20 @@ Keep the language warm, simple, and very easy to understand. No medical jargon.`
 
 export const chatWithAssistant = async (message: string, context: any) => {
   try {
-    const ai = getAI();
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: `User message: ${message}
-Current Context: ${JSON.stringify(context)}
-Provide a crisp, clear, and professional medical answer. If providing a summary, use bullet points. Otherwise, keep it short.`,
-      config: {
-        systemInstruction: "You are PostureCare AI. Give crisp, clear answers. Use bullet points for summaries. Avoid long paragraphs. Be a clinical but friendly guide.",
-      }
+    const response = await fetch(getApiUrl("/api/gemini/chat"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message, context }),
     });
 
-    return response.text;
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.text;
   } catch (error) {
     console.error("Gemini chat error:", error);
     return "I'm having trouble connecting to my medical database. Try again in a moment.";

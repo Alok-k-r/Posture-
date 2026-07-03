@@ -102,6 +102,7 @@ interface PostureState {
   goodSessionSeconds: number;
   warnSessionSeconds: number;
   integrityScore: number;
+  sessionStartTime: string | null;
 }
 
 const postureSlice = createSlice({
@@ -138,6 +139,7 @@ const postureSlice = createSlice({
     goodSessionSeconds: 0,
     warnSessionSeconds: 0,
     integrityScore: 100,
+    sessionStartTime: null,
   } as PostureState,
   reducers: {
     updateAngle: (state, action: PayloadAction<number>) => {
@@ -236,6 +238,7 @@ const postureSlice = createSlice({
       state.maxFocusDuration = 0;
       state.integrityScore = 100;
       state.score = 100;
+      state.sessionStartTime = null;
     },
     setThresholds: (state, action: PayloadAction<Partial<PostureState['thresholds']>>) => {
       state.thresholds = { ...state.thresholds, ...action.payload };
@@ -256,6 +259,9 @@ const postureSlice = createSlice({
       if (action.payload) {
         // When resuming starting recording, update raw live posture alignment status
         state.isCurrentlySlouching = state.angle < state.thresholds.warn;
+        if (!state.sessionStartTime) {
+          state.sessionStartTime = new Date().toISOString();
+        }
       }
     },
     setAutoRecordEnabled: (state, action: PayloadAction<boolean>) => {

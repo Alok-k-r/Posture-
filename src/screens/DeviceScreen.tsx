@@ -15,9 +15,11 @@ export const DeviceScreen: React.FC = () => {
   const { angle, baselineAngle, autoRecordEnabled } = useSelector((state: RootState) => state.posture);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isConnectingBle, setIsConnectingBle] = useState(false);
+  const [hasBlePermissionError, setHasBlePermissionError] = useState(false);
 
   const handleConnectBle = async () => {
     setIsConnectingBle(true);
+    setHasBlePermissionError(false);
     try {
       const success = await bluetoothService.connect();
       if (success) {
@@ -26,8 +28,14 @@ export const DeviceScreen: React.FC = () => {
         alert("Could not establish BLE GATT connection. Make sure your pod's Bluetooth is active.");
       }
     } catch (err: any) {
-      console.error(err);
-      alert(`Bluetooth link failed: ${err.message || err}`);
+      const errMsg = String(err.message || err);
+      if (errMsg.includes('permissions policy') || errMsg.includes('disallowed') || errMsg.includes('SecurityError')) {
+        setHasBlePermissionError(true);
+        console.warn('Bluetooth connection disallowed by permissions policy inside iframe.');
+      } else {
+        console.error(err);
+        alert(`Bluetooth link failed: ${err.message || err}`);
+      }
     } finally {
       setIsConnectingBle(false);
     }
@@ -271,6 +279,26 @@ export const DeviceScreen: React.FC = () => {
       {/* Critical Actions */}
       <div className="space-y-4 pt-4">
         <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] ml-4">Hardware Management</h3>
+
+        {hasBlePermissionError && (
+          <div className="p-5 bg-amber-500/10 border border-amber-500/20 rounded-[28px] text-left space-y-3 shadow-md mx-2">
+            <div className="flex items-center gap-2 text-amber-500 text-xs font-black uppercase tracking-wider">
+              <AlertCircle size={15} className="animate-pulse" />
+              Embedded Iframe Restricting BLE
+            </div>
+            <p className="text-[11px] text-slate-600 font-bold leading-relaxed">
+              Google AI Studio restricts active Web Bluetooth hardware pairing within the embedded dev preview iframe. To link and stream telemetry from your physical <strong className="text-slate-900">PosturePal ESP32 pod</strong>, please open this app in a new browser tab:
+            </p>
+            <a
+              href={window.location.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl text-[10px] uppercase tracking-wider font-extrabold transition-all active:scale-95 shadow-sm"
+            >
+              Open in New Tab ↗
+            </a>
+          </div>
+        )}
         
         {device.isConnected ? (
           <button 

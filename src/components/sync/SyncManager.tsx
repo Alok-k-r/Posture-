@@ -43,10 +43,11 @@ export const SyncManager: React.FC = () => {
 
   // 3. Real-time Device & History Listeners (ESP32 Integration - Firebase Realtime Database)
   useEffect(() => {
-    const deviceId = 'demo-123';
+    const activeId = user?.id || auth.currentUser?.uid || 'demo-123';
+    console.log('📡 Subscribing to real-time physical device streams for ID:', activeId);
 
     // A. Listen to the current device node on RTDB for live posture & status
-    const currentRef = rtdbRef(rtdb, `devices/${deviceId}/current`);
+    const currentRef = rtdbRef(rtdb, `devices/${activeId}/current`);
     const unsubscribeDevice = onRtdbValue(currentRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.val();
@@ -73,7 +74,7 @@ export const SyncManager: React.FC = () => {
     });
 
     // B. Fetch the history log from `/devices/{uid}/history` on RTDB, limited to last 50
-    const historyRef = rtdbQuery(rtdbRef(rtdb, `devices/${deviceId}/history`), limitToLast(50));
+    const historyRef = rtdbQuery(rtdbRef(rtdb, `devices/${activeId}/history`), limitToLast(50));
     const unsubscribeHistory = onRtdbValue(historyRef, (snapshot) => {
       if (snapshot.exists()) {
         const val = snapshot.val();
@@ -119,7 +120,7 @@ export const SyncManager: React.FC = () => {
       unsubscribeDevice();
       unsubscribeHistory();
     };
-  }, [dispatch]);
+  }, [dispatch, user?.id]);
 
   // 4. Initial Data Fetch (Settings & Appointments)
   useEffect(() => {
