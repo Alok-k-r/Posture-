@@ -9,8 +9,9 @@ import { Provider, useSelector, useDispatch } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 import { Toaster } from 'react-hot-toast';
 import { store, persistor, RootState, setAuthLoading, login, logout } from './store/store';
-import { auth } from './lib/firebase';
+import { auth, db } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 import { Layout } from './components/layout/Layout';
 import { SyncManager } from './components/sync/SyncManager';
 import { SlouchAlarmManager } from './components/posture/SlouchAlarmManager';
@@ -56,16 +57,58 @@ function AppContent() {
   const dispatch = useDispatch();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        dispatch(login({
-          id: firebaseUser.uid,
-          name: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Guest Explorer' : 'Rahul'),
-          email: firebaseUser.email || (firebaseUser.isAnonymous ? 'guest@posturecare.health' : 'rahul@posturecare.health'),
-          photo: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
-        }));
+        if (firebaseUser.isAnonymous) {
+          dispatch(login({
+            id: firebaseUser.uid,
+            name: 'Guest Explorer',
+            email: 'guest@posturecare.health',
+            photo: `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
+          }));
+          dispatch(setAuthLoading(false));
+        } else {
+          try {
+            const userDocRef = doc(db, 'users', firebaseUser.uid);
+            const userDoc = await getDoc(userDocRef);
+            if (userDoc.exists()) {
+              const data = userDoc.data();
+              if (data.age && data.height && data.weight) {
+                dispatch(login({
+                  id: firebaseUser.uid,
+                  name: data.name || firebaseUser.displayName || 'Rahul',
+                  email: data.email || firebaseUser.email || 'rahul@posturecare.health',
+                  photo: data.photo || firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`,
+                  age: data.age,
+                  height: data.height,
+                  weight: data.weight,
+                }));
+              } else {
+                // User doc exists but lacks required biometrics. Keep isAuth=false to prompt LoginScreen to show the details collection view.
+                dispatch(setAuthLoading(false));
+                return;
+              }
+            } else {
+              // No Firestore user document. Keep isAuth=false to prompt LoginScreen to show registration/details setup.
+              dispatch(setAuthLoading(false));
+              return;
+            }
+          } catch (err) {
+            console.error('Error fetching user profile from Firestore:', err);
+            // Offline/Local Mode fallback: Allow local login to maintain normal app experience
+            dispatch(login({
+              id: firebaseUser.uid,
+              name: firebaseUser.displayName || 'Rahul',
+              email: firebaseUser.email || 'rahul@posturecare.health',
+              photo: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`
+            }));
+          }
+          dispatch(setAuthLoading(false));
+        }
+      } else {
+        dispatch(logout());
+        dispatch(setAuthLoading(false));
       }
-      dispatch(setAuthLoading(false));
     });
 
     return () => unsubscribe();

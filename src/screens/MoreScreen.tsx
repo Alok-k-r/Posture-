@@ -1,14 +1,18 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store/store';
 import { FileText, Sliders, User, Brain, Bell, Shield, Info, ChevronRight, Share2, Wifi, WifiOff, RefreshCw, Bluetooth, Cpu } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { TermsOfServiceModal } from '../components/TermsOfServiceModal';
+import { PrivacyPolicyModal } from '../components/PrivacyPolicyModal';
 
 export const MoreScreen: React.FC = () => {
   const navigate = useNavigate();
   const { isOnline, syncQueue } = useSelector((state: RootState) => state.sync);
   const device = useSelector((state: RootState) => state.device);
+  const [isTermsOpen, setIsTermsOpen] = useState(false);
+  const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
 
   const menuItems = [
     { label: 'Device Management', desc: 'Hardware status & battery', path: '/device', icon: Cpu, color: 'text-indigo', bg: 'bg-indigo-10' },
@@ -19,7 +23,8 @@ export const MoreScreen: React.FC = () => {
 
   const secondaryItems = [
     { label: 'Notifications', icon: Bell },
-    { label: 'Privacy & Security', icon: Shield },
+    { label: 'Privacy & Security', icon: Shield, onClick: () => setIsPrivacyOpen(true) },
+    { label: 'Terms of Service', icon: FileText, onClick: () => setIsTermsOpen(true) },
     { label: 'About PostureCare', icon: Info },
     { label: 'Share with Doctor', icon: Share2 },
   ];
@@ -124,7 +129,11 @@ export const MoreScreen: React.FC = () => {
         <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] ml-4 leading-none">Security & Legal</h3>
         <div className="glass rounded-[40px] shadow-premium divide-y divide-white/20 overflow-hidden border-white/40">
           {secondaryItems.map((item, i) => (
-            <button key={i} className="w-full flex items-center justify-between p-6 hover:bg-white/40 transition-colors">
+            <button 
+              key={i} 
+              onClick={item.onClick}
+              className="w-full flex items-center justify-between p-6 hover:bg-white/40 transition-colors text-left cursor-pointer"
+            >
               <div className="flex items-center gap-5">
                 <item.icon size={22} className="text-slate-400" />
                 <span className="text-sm font-extrabold text-slate-700 tracking-tight leading-none">{item.label}</span>
@@ -141,6 +150,9 @@ export const MoreScreen: React.FC = () => {
           "Developed with ❤️ for spinal health. HIPAA Compliant v2."
         </p>
       </div>
+
+      <TermsOfServiceModal isOpen={isTermsOpen} onClose={() => setIsTermsOpen(false)} />
+      <PrivacyPolicyModal isOpen={isPrivacyOpen} onClose={() => setIsPrivacyOpen(false)} />
     </div>
   );
 };

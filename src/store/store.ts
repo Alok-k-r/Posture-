@@ -19,6 +19,9 @@ interface AuthState {
     email: string;
     photo: string | null;
     id: string;
+    age?: number;
+    height?: number;
+    weight?: number;
   } | null;
   loading: boolean;
 }
@@ -70,6 +73,15 @@ const uiSlice = createSlice({
 });
 
 // Posture Slice
+export interface BreakRecord {
+  id: string;
+  timestamp: string;
+  preBreakFatigue: number;
+  postBreakResilience: number;
+  thoracicStressRelief: number;
+  durationSeconds: number;
+}
+
 interface PostureState {
   angle: number;
   score: number;
@@ -103,6 +115,13 @@ interface PostureState {
   warnSessionSeconds: number;
   integrityScore: number;
   sessionStartTime: string | null;
+  // New break tracking properties
+  activeBreak: {
+    startTime: string;
+    preBreakFatigue: number;
+    durationSeconds: number;
+  } | null;
+  breakHistory: BreakRecord[];
 }
 
 const postureSlice = createSlice({
@@ -140,6 +159,8 @@ const postureSlice = createSlice({
     warnSessionSeconds: 0,
     integrityScore: 100,
     sessionStartTime: null,
+    activeBreak: null,
+    breakHistory: [],
   } as PostureState,
   reducers: {
     updateAngle: (state, action: PayloadAction<number>) => {
@@ -156,6 +177,8 @@ const postureSlice = createSlice({
       if (state.maxFocusDuration === undefined || isNaN(state.maxFocusDuration)) state.maxFocusDuration = 0;
       if (state.integrityScore === undefined || isNaN(state.integrityScore)) state.integrityScore = 100;
       if (state.score === undefined || isNaN(state.score)) state.score = 100;
+      if (state.activeBreak === undefined) state.activeBreak = null;
+      if (state.breakHistory === undefined) state.breakHistory = [];
 
       if (!state.isRecordingSession) {
         state.score = rounded; // If not recording, let the ring reflect raw live posture
@@ -174,8 +197,15 @@ const postureSlice = createSlice({
       if (state.maxFocusDuration === undefined || isNaN(state.maxFocusDuration)) state.maxFocusDuration = 0;
       if (state.integrityScore === undefined || isNaN(state.integrityScore)) state.integrityScore = 100;
       if (state.score === undefined || isNaN(state.score)) state.score = 100;
+      if (state.activeBreak === undefined) state.activeBreak = null;
+      if (state.breakHistory === undefined) state.breakHistory = [];
 
-      if (!state.isRecordingSession) return;
+      if (!state.isRecordingSession) {
+        if (state.activeBreak) {
+          state.activeBreak.durationSeconds = (state.activeBreak.durationSeconds || 0) + 1;
+        }
+        return;
+      }
 
       const angle = state.angle;
       const t = state.thresholds;
@@ -262,6 +292,49 @@ const postureSlice = createSlice({
         if (!state.sessionStartTime) {
           state.sessionStartTime = new Date().toISOString();
         }
+
+        // If there was an active break, compile the BreakRecord and push to history
+        if (state.activeBreak) {
+          const preBreakFatigue = state.activeBreak.preBreakFatigue;
+          const durationSeconds = state.activeBreak.durationSeconds || 1;
+
+          // Compute realistic biological recovery percentages based on rest duration (in seconds)
+          const postBreakResilience = Math.min(100, Math.round(20 + (durationSeconds * 0.5)));
+          const thoracicStressRelief = Math.min(100, Math.round(15 + (durationSeconds * 0.8)));
+
+          const breakRecord: BreakRecord = {
+            id: 'break-' + Date.now(),
+            timestamp: new Date().toISOString(),
+            preBreakFatigue,
+            postBreakResilience,
+            thoracicStressRelief,
+            durationSeconds
+          };
+
+          if (!state.breakHistory) {
+            state.breakHistory = [];
+          }
+
+          state.breakHistory.unshift(breakRecord);
+          state.breakHistory = state.breakHistory.slice(0, 50);
+
+          try {
+            localStorage.setItem('posture_breaks_history', JSON.stringify(state.breakHistory));
+          } catch (e) {
+            console.error('Failed to write break history to localStorage:', e);
+          }
+
+          state.activeBreak = null;
+        }
+      } else {
+        // Pausing / Taking a break
+        // We only log a real pre-break fatigue if the user has been in active sitting
+        const preBreakFatigue = Math.min(95, 20 + (state.incidents * 8));
+        state.activeBreak = {
+          startTime: new Date().toISOString(),
+          preBreakFatigue,
+          durationSeconds: 0
+        };
       }
     },
     setAutoRecordEnabled: (state, action: PayloadAction<boolean>) => {

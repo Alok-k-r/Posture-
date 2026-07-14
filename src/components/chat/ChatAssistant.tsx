@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageCircle, X, Send, Bot } from 'lucide-react';
+import { MessageCircle, X, Send, Bot, Sparkles, Brain, Cpu, Activity } from 'lucide-react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, setChatOpen } from '../../store/store';
 import { cn } from '../../lib/utils';
@@ -15,6 +15,7 @@ interface Message {
 
 export const ChatAssistant: React.FC = () => {
   const dispatch = useDispatch();
+  const dragConstraintsRef = useRef<HTMLDivElement>(null);
   const isOpen = useSelector((state: RootState) => state.ui.chatOpen);
   const user = useSelector((state: RootState) => state.auth.user);
   const posture = useSelector((state: RootState) => state.posture);
@@ -32,6 +33,57 @@ export const ChatAssistant: React.FC = () => {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isTyping]);
+
+  useEffect(() => {
+    const handleTriggerReport = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const reportText = customEvent.detail?.report || '';
+      if (reportText) {
+        dispatch(setChatOpen(true));
+        
+        const userMsg: Message = {
+          id: Date.now().toString(),
+          text: "Can you analyze my Local AI Biomechanical report and provide clinical suggestions?",
+          isAi: false,
+          timestamp: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, userMsg]);
+        setIsTyping(true);
+
+        const context = {
+          userName: user?.name,
+          posture: {
+            currentAngle: posture.angle,
+            score: posture.score,
+          },
+          appointments: appointments.map(a => ({
+            doctor: a.doctorName,
+            date: a.date,
+            specialty: a.specialty
+          })),
+          localModelReport: reportText
+        };
+
+        chatWithAssistant("Analyze this detailed local biomechanical report: " + reportText, context)
+          .then(response => {
+            const aiMsg: Message = {
+              id: (Date.now() + 1).toString(),
+              text: response,
+              isAi: true,
+              timestamp: new Date().toISOString()
+            };
+            setMessages(prev => [...prev, aiMsg]);
+          })
+          .catch(err => console.error("Error analyzing local report:", err))
+          .finally(() => setIsTyping(false));
+      }
+    };
+
+    window.addEventListener('posturecare_trigger_ai_report', handleTriggerReport);
+    return () => {
+      window.removeEventListener('posturecare_trigger_ai_report', handleTriggerReport);
+    };
+  }, [user, posture, appointments, dispatch]);
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -80,45 +132,57 @@ export const ChatAssistant: React.FC = () => {
 
   return (
     <>
+      {/* Invisible container boundary to restrict FAB drag strictly inside the safe app frame */}
+      <div 
+        ref={dragConstraintsRef} 
+        className="fixed inset-4 pointer-events-none z-50" 
+        id="chat_fab_drag_constraints" 
+      />
+
       {/* FAB */}
       <motion.button
         drag
-        dragConstraints={{
-          top: -window.innerHeight + 100,
-          left: -window.innerWidth + 80,
-          right: 0,
-          bottom: 0,
-        }}
+        dragConstraints={dragConstraintsRef}
         dragElastic={0.1}
-        whileHover={{ scale: 1.1 }}
-        whileDrag={{ scale: 1.2, cursor: 'grabbing', zIndex: 100 }}
-        whileTap={{ scale: 0.9 }}
+        dragMomentum={false}
+        whileHover={{ scale: 1.08 }}
+        whileDrag={{ scale: 1.1, cursor: 'grabbing', zIndex: 100 }}
+        whileTap={{ scale: 0.95 }}
         onClick={() => dispatch(setChatOpen(!isOpen))}
-        className="fixed bottom-32 right-6 w-14 h-14 rounded-full bg-slate-900 text-white shadow-premium z-50 flex items-center justify-center overflow-hidden border border-white/20 touch-none"
+        className="fixed bottom-32 right-6 w-14 h-14 rounded-full bg-slate-950 text-white shadow-[0_8px_30px_rgba(0,0,0,0.3)] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] z-50 flex items-center justify-center border border-slate-800 touch-none transition-all duration-300 group"
       >
-        <AnimatePresence mode="wait">
-          {isOpen ? (
-            <motion.div
-              key="close"
-              initial={{ rotate: -90, opacity: 0 }}
-              animate={{ rotate: 0, opacity: 1 }}
-              exit={{ rotate: 90, opacity: 0 }}
-            >
-              <X size={24} />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="chat"
-              initial={{ rotate: 90, opacity: 0 }}
-              animate={{ rotate: 0, opacity: 1 }}
-              exit={{ rotate: -90, opacity: 0 }}
-            >
-              <Bot size={28} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <div className="relative z-10 flex items-center justify-center">
+          <AnimatePresence mode="wait">
+            {isOpen ? (
+              <motion.div
+                key="close"
+                initial={{ rotate: -45, opacity: 0, scale: 0.8 }}
+                animate={{ rotate: 0, opacity: 1, scale: 1 }}
+                exit={{ rotate: 45, opacity: 0, scale: 0.8 }}
+                transition={{ duration: 0.15 }}
+              >
+                <X size={20} className="text-slate-400 stroke-[2]" />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="chat"
+                initial={{ rotate: 45, opacity: 0, scale: 0.8 }}
+                animate={{ rotate: 0, opacity: 1, scale: 1 }}
+                exit={{ rotate: -45, opacity: 0, scale: 0.8 }}
+                transition={{ duration: 0.15 }}
+                className="flex items-center justify-center"
+              >
+                <Sparkles 
+                  size={20} 
+                  className="text-indigo-400 fill-indigo-400/10 stroke-[1.75] group-hover:text-amber-300 group-hover:fill-amber-300/10 transition-colors duration-300" 
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
         {!isOpen && messages.length > 0 && (
-          <div className="absolute top-0 right-0 w-4 h-4 bg-red rounded-full border-2 border-white" />
+          <div className="absolute top-1 right-1 w-3.5 h-3.5 bg-rose-500 rounded-full border-2 border-white shadow-md animate-bounce" />
         )}
       </motion.button>
 
@@ -218,6 +282,7 @@ export const ChatAssistant: React.FC = () => {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                 placeholder="Ask me anything..."
+                maxLength={50000}
                 className="flex-1 bg-slate-100 rounded-full px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
               />
               <button

@@ -4,10 +4,23 @@ import { RootState, tickSessionStats } from '../../store/store';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertOctagon, Bell, Coffee, Play, Sliders, VolumeX, Volume2, ShieldCheck, HelpCircle, ChevronRight, Clock, ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { LocalModelService } from '../../services/localModelService';
 
 export const SlouchAlarmManager: React.FC = () => {
   const dispatch = useDispatch();
-  const { angle, score, thresholds, isRecordingSession } = useSelector((state: RootState) => state.posture);
+  const { 
+    angle, 
+    score, 
+    thresholds, 
+    isRecordingSession,
+    baselineAngle,
+    history,
+    goodSessionSeconds,
+    totalSessionSeconds,
+    incidents
+  } = useSelector((state: RootState) => state.posture);
+  
+  const user = useSelector((state: RootState) => state.auth.user);
   
   // Local active states
   const [slouchSeconds, setSlouchSeconds] = useState(0);
@@ -31,9 +44,32 @@ export const SlouchAlarmManager: React.FC = () => {
   const alarmIntervalRef = useRef<any>(null);
   const vibrationIntervalRef = useRef<any>(null);
   
-  // Slouch detection tracking
-  const isSlouching = angle < thresholds.warn;
+  // Recalculate local biomechanical analytical metrics using the upgraded five-layer on-device ML model
+  const localAI = LocalModelService.recalculateAllBiomechanicalMetrics(
+    angle,
+    baselineAngle,
+    history,
+    goodSessionSeconds,
+    totalSessionSeconds,
+    incidents,
+    user ? { age: user.age, height: user.height, weight: user.weight } : undefined
+  );
+
+  // Dynamic, model-driven personalized slouch detection based on active muscle stamina & user compliance
+  const effectiveWarnThreshold = localAI?.personalizedWarnThreshold || thresholds.warn;
+  const isSlouching = angle < effectiveWarnThreshold;
   const [goodPostureSeconds, setGoodPostureSeconds] = useState(0);
+
+  // Track incidents to log hourly slouch patterns
+  const prevIncidentsRef = useRef(incidents);
+
+  useEffect(() => {
+    // If a new slouch incident occurred, log it to build hourly/time-of-day pattern maps
+    if (incidents > prevIncidentsRef.current) {
+      LocalModelService.logSlouchTimePattern();
+    }
+    prevIncidentsRef.current = incidents;
+  }, [incidents]);
 
   // 1. Clock timer
   useEffect(() => {
@@ -301,6 +337,40 @@ export const SlouchAlarmManager: React.FC = () => {
       return () => clearInterval(interval);
     }
   }, [pausedUntil]);
+
+  // Log alarm and correction events dynamically
+  const prevShowOverlayAlarmRef = useRef(false);
+  const alarmStartTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (showOverlayAlarm && !prevShowOverlayAlarmRef.current) {
+      // Alarm just started
+      alarmStartTimeRef.current = Date.now();
+      try {
+        LocalModelService.logReminderSent();
+        console.log('🔔 Slouch alarm triggered! Logged to local compliance logs.');
+      } catch (err) {
+        console.warn('Failed to log reminder sent:', err);
+      }
+    } else if (!showOverlayAlarm && prevShowOverlayAlarmRef.current) {
+      // Alarm just stopped
+      if (alarmStartTimeRef.current) {
+        const responseTime = (Date.now() - alarmStartTimeRef.current) / 1000;
+        // Check if the alarm stopped because they corrected (slouchSeconds is 0 or less than warning threshold)
+        const corrected = slouchSeconds < thresholds.slouchWarningTime;
+        if (corrected) {
+          try {
+            LocalModelService.logPostureCorrected(responseTime);
+            console.log(`✅ Slouch corrected in ${responseTime.toFixed(1)} seconds! Logged to compliance logs.`);
+          } catch (err) {
+            console.warn('Failed to log posture corrected:', err);
+          }
+        }
+        alarmStartTimeRef.current = null;
+      }
+    }
+    prevShowOverlayAlarmRef.current = showOverlayAlarm;
+  }, [showOverlayAlarm, slouchSeconds, thresholds]);
 
   // Format Lockscreen Chronometer displays
   const formatClockTime = (date: Date) => {

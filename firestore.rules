@@ -1,67 +1,70 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // 1. Root level default deny rule
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // 2. Global authorization helper functions
     function isSignedIn() { return request.auth != null; }
     function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
     function isValidId(id) { return id is string && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
-    
-    function isValidDevice(data) {
-      return data.keys().hasAll(['angle', 'lastUpdated']) 
-             && data.keys().size() <= 5
-             && data.angle is number 
-             && data.angle >= -180 && data.angle <= 180
-             && data.lastUpdated == request.time;
-    }
 
+    // 3. Document validation schemas
     function isValidAppointment(data) {
-      return data.keys().hasAll(['doctorName', 'specialty', 'date', 'time', 'status', 'fee'])
+      return data.keys().hasAll(['doctorName', 'specialty', 'date', 'status'])
+             && data.keys().size() <= 12
              && data.doctorName is string && data.doctorName.size() <= 100
-             && data.status in ['confirmed', 'pending', 'cancelled'];
+             && data.specialty is string && data.specialty.size() <= 100
+             && data.status in ['confirmed', 'pending', 'cancelled', 'upcoming', 'completed'];
     }
 
     function isValidThresholds(data) {
       return data.keys().hasAll(['good', 'warn', 'bad'])
+             && data.keys().size() <= 15
              && data.good is number && data.warn is number && data.bad is number
              && data.good > data.warn && data.warn > data.bad;
     }
 
-    match /devices/{deviceId} {
-      allow read, write: if true;
-      match /{allPaths=**} {
-        allow read, write: if true;
-      }
+    function isValidSession(data) {
+      return data.keys().hasAll(['date', 'startTime', 'endTime', 'duration', 'score', 'slouches'])
+             && data.keys().size() <= 12
+             && data.duration is number && data.duration >= 0
+             && data.score is number && data.score >= 0 && data.score <= 100
+             && data.slouches is number && data.slouches >= 0;
     }
 
-    match /posture/{id=**} { allow read, write: if true; }
-    match /telemetry/{id=**} { allow read, write: if true; }
-    match /readings/{id=**} { allow read, write: if true; }
-    match /data/{id=**} { allow read, write: if true; }
-    match /history/{id=**} { allow read, write: if true; }
-    match /sensor_data/{id=**} { allow read, write: if true; }
-    match /angles/{id=**} { allow read, write: if true; }
-    match /logs/{id=**} { allow read, write: if true; }
-    match /sensor/{id=**} { allow read, write: if true; }
-    match /postures/{id=**} { allow read, write: if true; }
-
+    // 4. Secure Resource Endpoints
     match /users/{userId} {
-      match /appointments/{appointmentId} {
-        allow list: if isOwner(userId);
-        allow get: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidAppointment(incoming());
-        allow update: if isOwner(userId) && isValidAppointment(incoming()) 
-                      && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'date', 'time']);
-        allow delete: if isOwner(userId);
-      }
+      allow read, write: if isOwner(userId);
 
+      // User calibration and alarm thresholds settings
       match /settings/thresholds {
         allow read: if isOwner(userId);
         allow write: if isOwner(userId) && isValidThresholds(incoming());
+      }
+
+      // Clinical orthopedic appointment logs
+      match /appointments/{appointmentId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(appointmentId) && isValidAppointment(incoming());
+        allow update: if isOwner(userId) 
+                      && isValidId(appointmentId)
+                      && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'date', 'time', '_deleted']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Biometric sitting diagnostic logs (immutable archives)
+      match /sessions/{sessionId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(sessionId) && isValidSession(incoming());
+        allow update: if false; // Sessions are immutable historical telemetry records
+        allow delete: if false; // Prevention of clinical/insurance tracking log manipulation
       }
     }
   }

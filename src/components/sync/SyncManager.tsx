@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { RootState, setOnlineStatus, removeFromSyncQueue, updateAngle, setThresholds, setHasPaired, setDeviceStatus, updateBattery, setPostureHistory, setIsRecordingSession } from '../../store/store';
+import { RootState, setOnlineStatus, removeFromSyncQueue, updateAngle, setThresholds, setHasPaired, setDeviceStatus, updateBattery, setPostureHistory, setIsRecordingSession, updateUser } from '../../store/store';
 import { Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, auth, rtdb } from '../../lib/firebase';
@@ -126,23 +126,44 @@ export const SyncManager: React.FC = () => {
   useEffect(() => {
     if (!user?.id || !auth.currentUser || !isOnline) return;
 
+    let unsubscribeThresholds: (() => void) | undefined;
+    let unsubscribeUser: (() => void) | undefined;
+
     const fetchProfile = async () => {
       try {
         // Sync Thresholds
         const tRef = doc(db, 'users', user.id, 'settings', 'thresholds');
-        const tSnap = onSnapshot(tRef, (doc) => {
-          if (doc.exists()) {
-             dispatch(setThresholds(doc.data()));
+        unsubscribeThresholds = onSnapshot(tRef, (docSnap) => {
+          if (docSnap.exists()) {
+             dispatch(setThresholds(docSnap.data()));
           }
         });
 
-        return () => tSnap();
+        // Sync User Doc for Biometrics (Age, Height, Weight)
+        const uRef = doc(db, 'users', user.id);
+        unsubscribeUser = onSnapshot(uRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            dispatch(updateUser({
+              age: data.age,
+              height: data.height,
+              weight: data.weight,
+              name: data.name || user.name,
+              photo: data.photo || user.photo
+            }));
+          }
+        });
       } catch (err) {
-        console.error('Failed to initial fetch profile');
+        console.error('Failed to initial fetch profile', err);
       }
     };
 
     fetchProfile();
+
+    return () => {
+      if (unsubscribeThresholds) unsubscribeThresholds();
+      if (unsubscribeUser) unsubscribeUser();
+    };
   }, [user?.id, auth.currentUser, isOnline, dispatch]);
 
   // 5. Sync Queue Processor
@@ -171,6 +192,11 @@ export const SyncManager: React.FC = () => {
     const userId = auth.currentUser.uid;
 
     switch (type) {
+      case 'SYNC_USER_PROFILE': {
+        const ref = doc(db, 'users', userId);
+        await setDoc(ref, payload, { merge: true });
+        break;
+      }
       case 'SYNC_THRESHOLDS': {
         const ref = doc(db, 'users', userId, 'settings', 'thresholds');
         await setDoc(ref, payload);
@@ -185,6 +211,12 @@ export const SyncManager: React.FC = () => {
       case 'DELETE_APPOINTMENT': {
         const ref = doc(db, 'users', userId, 'appointments', payload.id);
         await setDoc(ref, { _deleted: true }, { merge: true });
+        break;
+      }
+      case 'SYNC_BREAK': {
+        const ref = doc(db, 'users', userId, 'breaks', payload.id);
+        const { id, ...data } = payload;
+        await setDoc(ref, data, { merge: true });
         break;
       }
       default:
