@@ -20,6 +20,7 @@ export const ThresholdScreen: React.FC = () => {
   const [local, setLocal] = useState(currentThresholds);
   const [showSuccess, setShowSuccess] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
+  const [calibrationStatus, setCalibrationStatus] = useState('');
 
   const handleSave = () => {
     dispatch(setThresholds(local));
@@ -56,50 +57,94 @@ export const ThresholdScreen: React.FC = () => {
     setTimeout(() => setShowSuccess(false), 3000);
   };
 
-  const handleRecalibrate = () => {
+  const handleRecalibrate = async () => {
     setIsCalibrating(true);
-    let count = 3;
-    const interval = setInterval(async () => {
-      count -= 1;
-      if (count <= 0) {
-        clearInterval(interval);
-        const calibratedAngle = Math.round(currentAngle);
-        dispatch(recalibrateBaseline(calibratedAngle));
-
-        // 1. Sync BLE if connected
-        if (bluetoothService.isConnected()) {
-          bluetoothService.writeConfig(local.alertAngle, local.alertDelay * 1000, calibratedAngle).catch((err) => {
-            console.warn('Could not write calibration baseline to ESP32 over BLE:', err);
-          });
-        }
-
-        // 2. Sync to Firestore and RTDB under user's actual UID
-        const uid = auth.currentUser?.uid || user?.id;
-        if (uid) {
-          try {
-            // Firestore device document
-            const deviceRef = doc(db, 'devices', uid);
-            await setDoc(deviceRef, {
-              baselineAngle: calibratedAngle,
-              lastSync: new Date().toISOString()
-            }, { merge: true });
-
-            // RTDB current/config path
-            const currentRef = rtdbRef(rtdb, `devices/${uid}/current`);
-            await rtdbSet(currentRef, {
-              baselineAngle: calibratedAngle,
-              lastCalibrated: new Date().toISOString()
-            });
-
-            console.log('✅ Physical device calibration synchronized to Firestore and Realtime Database.');
-          } catch (err) {
-            console.error('Failed to sync physical device calibration to cloud database:', err);
-          }
-        }
-
-        setIsCalibrating(false);
+    const isDeviceConnected = bluetoothService.isConnected();
+    
+    if (isDeviceConnected) {
+      // 1. Send the calibration trigger command {"c":1} to the physical ESP32
+      setCalibrationStatus('Hold steady & upright...');
+      const success = await bluetoothService.triggerCalibration();
+      if (!success) {
+        console.warn('Could not trigger on-device physical calibration over BLE. Falling back to local mode.');
       }
-    }, 1000);
+      
+      let count = 5; // 5-second countdown to match WAITING_VERTICAL + CALIBRATING on physical device
+      const interval = setInterval(async () => {
+        count -= 1;
+        if (count >= 4) {
+          setCalibrationStatus('Aligning Vertical...');
+        } else if (count >= 1) {
+          setCalibrationStatus(`Calibrating Spine (${count}s)...`);
+        } else {
+          clearInterval(interval);
+          
+          // ESP32 calibrated its baseline, so the current straight position is now exactly 90.0 degrees
+          const calibratedAngle = 90;
+          dispatch(recalibrateBaseline(calibratedAngle));
+
+          // Sync to Firestore and RTDB under user's actual UID
+          const uid = auth.currentUser?.uid || user?.id;
+          if (uid) {
+            try {
+              const deviceRef = doc(db, 'devices', uid);
+              await setDoc(deviceRef, {
+                baselineAngle: calibratedAngle,
+                lastSync: new Date().toISOString()
+              }, { merge: true });
+
+              const currentRef = rtdbRef(rtdb, `devices/${uid}/current`);
+              await rtdbSet(currentRef, {
+                baselineAngle: calibratedAngle,
+                lastCalibrated: new Date().toISOString()
+              });
+              console.log('✅ Physical device calibration synchronized to Firestore and Realtime Database.');
+            } catch (err) {
+              console.error('Failed to sync physical device calibration to cloud database:', err);
+            }
+          }
+          
+          setCalibrationStatus('');
+          setIsCalibrating(false);
+        }
+      }, 1000);
+    } else {
+      // Non-connected local/simulation calibration
+      let count = 3;
+      setCalibrationStatus(`Calibrating Spine (${count}s)...`);
+      const interval = setInterval(async () => {
+        count -= 1;
+        if (count >= 1) {
+          setCalibrationStatus(`Calibrating Spine (${count}s)...`);
+        } else {
+          clearInterval(interval);
+          const calibratedAngle = Math.round(currentAngle);
+          dispatch(recalibrateBaseline(calibratedAngle));
+
+          const uid = auth.currentUser?.uid || user?.id;
+          if (uid) {
+            try {
+              const deviceRef = doc(db, 'devices', uid);
+              await setDoc(deviceRef, {
+                baselineAngle: calibratedAngle,
+                lastSync: new Date().toISOString()
+              }, { merge: true });
+
+              const currentRef = rtdbRef(rtdb, `devices/${uid}/current`);
+              await rtdbSet(currentRef, {
+                baselineAngle: calibratedAngle,
+                lastCalibrated: new Date().toISOString()
+              });
+            } catch (err) {
+              console.error('Failed to sync simulation calibration to cloud database:', err);
+            }
+          }
+          
+          setCalibrationStatus('');
+          setIsCalibrating(false);
+        }
+      }, 1000);
+    }
   };
 
   const handleReset = () => {
@@ -149,7 +194,7 @@ export const ThresholdScreen: React.FC = () => {
             disabled={isCalibrating}
             className="bg-slate-900 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all disabled:opacity-50"
           >
-            {isCalibrating ? "Calibrating..." : "Calibrate Now"}
+            {isCalibrating ? (calibrationStatus || "Calibrating...") : "Calibrate Now"}
           </button>
         </div>
       </div>

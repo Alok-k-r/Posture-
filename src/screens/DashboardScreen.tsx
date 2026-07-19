@@ -43,9 +43,7 @@ export const DashboardScreen: React.FC = () => {
   const { thresholds, streak, goodSessionSeconds, totalSessionSeconds } = posture;
 
   const [activeTab, setActiveTab] = useState<'realtime' | 'health-index'>('realtime');
-  const [selectedIntel, setSelectedIntel] = useState<any | null>(null);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
-  const [localAiInsight, setLocalAiInsight] = useState('');
 
   // Fetch metrics from our local AI biomechanical engine
   const m = LocalModelService.getMetrics();
@@ -80,158 +78,6 @@ export const DashboardScreen: React.FC = () => {
     const secs = sec % 60;
     if (mins === 0) return `${secs}s`;
     return `${mins}m ${secs}s`;
-  };
-
-  const getSpinalIntelAlerts = () => {
-    const list = [];
-    const diff = Math.max(0, Math.abs(posture.baselineAngle - posture.angle));
-    
-    // 1. Biomechanical Alignment & Disc Shear
-    if (diff > 15) {
-      list.push({
-        title: "Vertebral Shearing Stress",
-        msg: `Severe deviation (${diff}° off-baseline). Active facet shearing force is elevated to ${m.upperBackStrainLbs} lbs.`,
-        type: 'danger',
-        time: 'Critical',
-        icon: AlertCircle,
-        bg: 'bg-rose-50/70',
-        color: 'text-rose-500',
-        border: 'border-rose-100',
-        detail: `Critical cervical-thoracic deflection multiplies the physical lever arm of your head. This projects a massive ${m.upperBackStrainLbs} lbs of active shear pressure on the lower cervical vertebra, squeezing the intervertebral nucleus pulposus and putting high mechanical load on paraspinal soft tissues.`
-      });
-    } else if (diff > 5) {
-      list.push({
-        title: "Myofascial Strain Overload",
-        msg: `Mild slouch (${diff}° deflection). Trapezius static hold tension is ${m.upperBackStrainLbs} lbs.`,
-        type: 'warn',
-        time: 'Elevated',
-        icon: Activity,
-        bg: 'bg-amber-50/70',
-        color: 'text-amber-600',
-        border: 'border-amber-100',
-        detail: `Your upper back has deviated by ${diff}° from your calibrated neutral S-curve. This elevates static contraction load to ${m.upperBackStrainLbs} lbs on the levator scapulae and rhomboids. If sustained, this triggers muscular ischemia (lack of blood flow) and paraspinal aching.`
-      });
-    } else {
-      list.push({
-        title: "Hydrostatic Disc Compression",
-        msg: `S-Curve is aligned, but sustaining a constant gravity load of ${m.upperBackStrainLbs} lbs.`,
-        type: 'warn',
-        time: 'Compressive Load',
-        icon: Info,
-        bg: 'bg-indigo-50/70',
-        color: 'text-indigo-600',
-        border: 'border-indigo-100',
-        detail: `Even with perfect alignment variance of ${diff}°, gravity exerts a continuous axial compressive load of ${m.upperBackStrainLbs} lbs on your facet joints and discs. Prolonged static sitting restricts fluid transfer. You must periodically decompress the spine to maintain disc hydration and prevent tissue creep.`
-      });
-    }
-
-    // 2. Paraspinal Muscle Fatigue
-    if (m.fatigueScore > 50) {
-      list.push({
-        title: "Paraspinal Fatigue Threshold",
-        msg: `Critical muscle fatigue at ${m.fatigueScore}% (${m.fatigueTrend}). Localized micro-tremors detected.`,
-        type: 'danger',
-        time: 'Severe Fatigue',
-        icon: Flame,
-        bg: 'bg-rose-50/50',
-        color: 'text-rose-600',
-        border: 'border-rose-100',
-        detail: `Postural slow-twitch muscle fibers are exhausted from sustaining continuous isometric loading. The paraspinal muscular engine is depleted, causing structural load to transfer directly to inert ligaments. Stand immediately to prevent micro-trauma and slouch-creep.`
-      });
-    } else if (m.fatigueScore > 20) {
-      list.push({
-        title: "Ischemic Fatigue Accumulation",
-        msg: `Muscular fatigue at ${m.fatigueScore}% (${m.fatigueTrend}). Peak predicted in 30m: ${m.predictedFatigue30m}%.`,
-        type: 'warn',
-        time: 'Fatigue Onset',
-        icon: Battery,
-        bg: 'bg-amber-50/50',
-        color: 'text-amber-500',
-        border: 'border-amber-100',
-        detail: `Slow-twitch postural fibers are showing fatigue onset of ${m.fatigueScore}% due to sustained sitting posture. This reduces blood perfusion to the rhomboids. Sitting archetype: "${m.digitalProfile.sittingStyle}". Perform 3 shoulder rolls.`
-      });
-    } else {
-      list.push({
-        title: "Postural Energy Reserve",
-        msg: `Paraspinal fatigue is low (${m.fatigueScore}%). Active stability index is strong at ${m.stabilityScore}%.`,
-        type: 'good',
-        time: 'Stable',
-        icon: ShieldCheck,
-        bg: 'bg-emerald-50/50',
-        color: 'text-emerald-500',
-        border: 'border-emerald-100',
-        detail: `Your postural stabilizer muscles are operating under healthy energy reserves. Active endurance index is ${m.dailyEnduranceScore}%. To maintain this state, remember to avoid static posture locks by performing micro-movements every 15 minutes.`
-      });
-    }
-
-    // 3. Decompression Break Urgency
-    if (m.breakUrgency === 'Immediate' || m.breakUrgency === 'High') {
-      list.push({
-        title: "Thoracic Decompression Trigger",
-        msg: `Urgency rating: ${m.breakUrgency}. ${m.breakRecommendationMessage}`,
-        type: 'danger',
-        time: 'Break Overdue',
-        icon: Clock,
-        bg: 'bg-rose-50/50',
-        color: 'text-rose-500',
-        border: 'border-rose-100',
-        detail: `Continuous biomechanical pressure has crossed safe physiological limits. It is highly recommended to perform a decompression break: ${m.breakRecommendationMessage}. Standing up unloads the discs, returning cellular hydration and reducing fatigue.`
-      });
-    } else {
-      list.push({
-        title: "Facet Joint Hydration Status",
-        msg: `Decompression index: ${m.breakUrgency}. ${m.breakRecommendationMessage}`,
-        type: 'good',
-        time: 'On Track',
-        icon: Zap,
-        bg: 'bg-violet-50/50',
-        color: 'text-violet-500',
-        border: 'border-violet-100',
-        detail: `Intra-discal fluid dynamics are in a healthy equilibrium. Your spine is responding well to posture resets. Next structured decompression event is suggested as fatigue accumulates.`
-      });
-    }
-
-    // 4. Behavioral Archetype
-    list.push({
-      title: "Kinetic Sitting Archetype",
-      msg: `Classified as "${m.digitalProfile.sittingStyle}". Slouch signature: "${m.digitalProfile.typicalSlouchPattern}".`,
-      type: 'good',
-      time: 'Cognitive',
-      icon: Info,
-      bg: 'bg-slate-50/70',
-      color: 'text-slate-500',
-      border: 'border-slate-100',
-      detail: `Deep kinetic analyzer identified your movement style as "${m.digitalProfile.sittingStyle}" with a classic "${m.digitalProfile.typicalSlouchPattern}" habit. High-risk fatigue window: ${m.digitalProfile.highRiskTimeWindow}. Be cautious during these hours as muscular control naturally degrades.`
-    });
-
-    // 5. Correction Velocity & Compliance
-    if (m.dailyComplianceRate < 70) {
-      list.push({
-        title: "Neuromuscular Latency Alert",
-        msg: `Sensor compliance is ${m.dailyComplianceRate}%. Avg correction response delay is ${m.averageResponseTimeSeconds}s.`,
-        type: 'warn',
-        time: 'Action Needed',
-        icon: AlertCircle,
-        bg: 'bg-amber-50/50',
-        color: 'text-amber-500',
-        border: 'border-amber-100',
-        detail: `Your response to the haptic posture chime is delayed, requiring ${m.averageResponseTimeSeconds} seconds on average. Delayed correction extends the time your spine is subjected to overload shear. Strive to engage your core muscles immediately on chime alert.`
-      });
-    } else {
-      list.push({
-        title: "Neuromuscular Reflex Mastery",
-        msg: `Superb alert compliance: ${m.dailyComplianceRate}% (Avg response: ${m.averageResponseTimeSeconds}s).`,
-        type: 'good',
-        time: 'Excellent',
-        icon: Trophy,
-        bg: 'bg-emerald-50/50',
-        color: 'text-emerald-500',
-        border: 'border-emerald-100',
-        detail: `Superb neuromuscular feedback integration! You corrected your alignment in an average of ${m.averageResponseTimeSeconds} seconds across ${m.correctionsAchievedCount} successful corrections today, keeping cumulative disc strain to an absolute minimum.`
-      });
-    }
-
-    return list;
   };
 
   // 28-day Consistency Calendar logic
@@ -502,7 +348,15 @@ export const DashboardScreen: React.FC = () => {
 
       {/* Primary Biomechanical Indicators Section */}
       <div className="space-y-4">
-        <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em] px-1">Biomechanical Telemetry</h3>
+        <div className="flex justify-between items-center px-1">
+          <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Biomechanical Telemetry</h3>
+          <button 
+            onClick={() => setIsAiModalOpen(true)}
+            className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 uppercase tracking-widest flex items-center gap-1 transition-all"
+          >
+            <Sparkles size={10} className="text-indigo-500 animate-pulse" /> View AI Report
+          </button>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           
           {/* Card 1: Upper Back Stress Load */}
@@ -742,127 +596,7 @@ export const DashboardScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Postural Intel: AI Alerts Layer */}
-      <div className="space-y-5">
-         <div className="flex items-center justify-between px-2">
-            <div className="flex items-center gap-3">
-               <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
-                  <Sparkles size={20} />
-               </div>
-               <h3 className="text-xl font-black tracking-tight text-slate-800">Spinal Intel</h3>
-            </div>
-            <button 
-              onClick={() => {
-                const insight = LocalModelService.generateLocalBiomechanicalInsight(posture.angle, posture.baselineAngle);
-                setLocalAiInsight(insight);
-                setIsAiModalOpen(true);
-                const shortSummary = `Spine: ${Math.round(Math.max(0, Math.abs(posture.baselineAngle - posture.angle)))}° deviation. Fatigue: ${m.fatigueScore}%. Break index: ${m.breakUrgency}.`;
-                sendLocalNotification('Local AI Spinal Diagnostics', { 
-                  body: shortSummary,
-                  icon: '✨'
-                });
-              }}
-              className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:bg-indigo-50 px-3 py-2 rounded-xl transition-colors flex items-center gap-1.5"
-            >
-              <Sparkles size={12} className="text-indigo-500 animate-pulse" />
-              AI Analysis
-            </button>
-         </div>
-         
-         <div className="space-y-4">
-           {getSpinalIntelAlerts().map((alert, i) => (
-             <motion.div 
-               key={i} 
-               layout
-               initial={{ opacity: 0, x: -20 }}
-               animate={{ opacity: 1, x: 0 }}
-               whileHover={{ scale: 1.02 }}
-               onClick={() => {
-                 setSelectedIntel(alert);
-               }}
-               className={cn(
-                 "p-5 rounded-[36px] flex items-center gap-5 border transition-all cursor-pointer group shadow-soft bg-white",
-                 alert.bg,
-                 alert.border
-               )}
-             >
-               <div className="w-14 h-14 rounded-2xl bg-white shadow-soft flex items-center justify-center text-2xl flex-shrink-0 transition-transform group-hover:scale-110">
-                 <alert.icon size={22} className={alert.color} fill={alert.type === 'good' ? "currentColor" : "none"} />
-               </div>
-               <div className="flex-1 space-y-1">
-                 <span className={cn("text-[9px] font-black uppercase tracking-[0.15em] block", alert.color)}>
-                   {alert.title}
-                 </span>
-                 <p className="text-sm font-bold text-slate-800 leading-snug">{alert.msg}</p>
-                 <div className="flex items-center gap-2 pt-0.5 opacity-60">
-                    <Clock size={10} className="text-slate-400" />
-                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{alert.time}</span>
-                 </div>
-               </div>
-               <div className="w-10 h-10 rounded-xl bg-white/50 flex items-center justify-center text-slate-300 group-hover:text-slate-500 group-hover:bg-white transition-all flex-shrink-0">
-                 <ChevronRight size={18} />
-               </div>
-             </motion.div>
-           ))}
-         </div>
-      </div>
 
-      {/* Dynamic Detail Modal for Single alert click */}
-      <AnimatePresence>
-        {selectedIntel && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            {/* Dark glass backdrop */}
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setSelectedIntel(null)}
-              className="absolute inset-0 bg-slate-950/45 backdrop-blur-md"
-            />
-            
-            {/* Panel */}
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="relative w-full max-w-md bg-white rounded-[40px] shadow-premium border border-slate-150 overflow-hidden z-10 p-6 space-y-5"
-            >
-              <div className="flex justify-between items-start">
-                <div className="flex items-center gap-3">
-                  <div className={cn("w-10 h-10 rounded-2xl flex items-center justify-center text-lg", selectedIntel.bg)}>
-                    <selectedIntel.icon size={20} className={selectedIntel.color} />
-                  </div>
-                  <div>
-                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Spinal Diagnostic</span>
-                    <h4 className="text-base font-black text-slate-800 tracking-tight">{selectedIntel.title}</h4>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setSelectedIntel(null)}
-                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="p-5 bg-slate-50/50 rounded-3xl border border-slate-100 space-y-3">
-                <p className="text-sm font-black text-slate-800 leading-snug">{selectedIntel.msg}</p>
-                <div className="h-[1px] bg-slate-100 w-full" />
-                <p className="text-xs font-bold text-slate-500 leading-relaxed">{selectedIntel.detail}</p>
-              </div>
-
-              <div className="flex gap-3 justify-end pt-2">
-                <button 
-                  onClick={() => setSelectedIntel(null)}
-                  className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-black text-xs uppercase tracking-widest rounded-2xl transition-colors shadow-lg shadow-slate-950/10 active:scale-95"
-                >
-                  Acknowledge & Calibrate
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* Local AI Synthesis Diagnostic Summary Modal */}
       <AnimatePresence>

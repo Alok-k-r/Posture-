@@ -10,8 +10,20 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const location = useLocation();
   const navigate = useNavigate();
   const isAuth = useSelector((state: RootState) => state.auth.isAuth);
+  const user = useSelector((state: RootState) => state.auth.user);
   const device = useSelector((state: RootState) => state.device);
   
+  // Hide layout wrappers entirely if user is authenticated but hasn't accepted terms yet
+  const termsNotAccepted = isAuth && user && !user.hasAcceptedTerms;
+
+  if (termsNotAccepted) {
+    return (
+      <main className="min-h-screen w-screen bg-white overflow-hidden flex flex-col">
+        {children}
+      </main>
+    );
+  }
+
   // Hide TabBar on Onboarding screens
   const isSetupOrLogin = location.pathname === '/login' || location.pathname === '/device-setup';
   const showNav = isAuth && !isSetupOrLogin;

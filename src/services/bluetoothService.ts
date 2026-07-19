@@ -167,6 +167,24 @@ class BluetoothService {
     }
   }
 
+  public async triggerCalibration(): Promise<boolean> {
+    if (!this.configCharacteristic) {
+      console.warn('BLE Config Characteristic is not connected or available for calibration.');
+      return false;
+    }
+    try {
+      const payload = { c: 1 };
+      const encoder = new TextEncoder();
+      const data = encoder.encode(JSON.stringify(payload));
+      await this.configCharacteristic.writeValue(data);
+      console.log('✅ Sent physical calibration command ({"c":1}) to ESP32.');
+      return true;
+    } catch (err) {
+      console.error('Failed to write calibration command to ESP32 over BLE:', err);
+      return false;
+    }
+  }
+
   private handleDisconnected = () => {
     console.warn('⚠️ PosturePal BLE GATT disconnected!');
     store.dispatch(setDeviceStatus(false));

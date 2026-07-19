@@ -22,6 +22,7 @@ interface AuthState {
     age?: number;
     height?: number;
     weight?: number;
+    hasAcceptedTerms?: boolean;
   } | null;
   loading: boolean;
 }
@@ -45,6 +46,10 @@ const authSlice = createSlice({
       state.isAuth = false;
       state.user = null;
       state.loading = false;
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.removeItem('login_mode');
+        localStorage.removeItem('local_user_profile');
+      }
     },
     setAuthLoading: (state, action: PayloadAction<boolean>) => {
       state.loading = action.payload;
@@ -518,7 +523,7 @@ const persistConfig = {
   key: 'root',
   version: 1,
   storage,
-  whitelist: ['ui', 'posture', 'appointments', 'sync', 'device'], // Persist these
+  whitelist: ['auth', 'ui', 'posture', 'appointments', 'sync', 'device'], // Persist these including auth state
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);
