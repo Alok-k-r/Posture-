@@ -24,9 +24,18 @@ export interface PersonalModelMetadata {
 export class IndexedDbService {
   private static db: IDBDatabase | null = null;
 
+  private static getCurrentUserId(): string {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return localStorage.getItem('current_user_id') || 'guest';
+    }
+    return 'guest';
+  }
+
   private static getLocalStorageFallback<T>(key: string, defaultValue: T): T {
     try {
-      const saved = localStorage.getItem(key);
+      const userId = this.getCurrentUserId();
+      const userKey = `${key}_${userId}`;
+      const saved = localStorage.getItem(userKey);
       return saved ? JSON.parse(saved) : defaultValue;
     } catch {
       return defaultValue;
@@ -35,14 +44,26 @@ export class IndexedDbService {
 
   private static setLocalStorageFallback(key: string, value: any): void {
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      const userId = this.getCurrentUserId();
+      const userKey = `${key}_${userId}`;
+      localStorage.setItem(userKey, JSON.stringify(value));
     } catch (e) {
       console.warn("Storage fallback failed:", e);
     }
   }
 
   public static async initDb(): Promise<IDBDatabase> {
-    if (this.db) return this.db;
+    const userId = this.getCurrentUserId();
+    const dbName = `${DB_NAME}_${userId}`;
+
+    if (this.db) {
+      if (this.db.name === dbName) {
+        return this.db;
+      } else {
+        this.db.close();
+        this.db = null;
+      }
+    }
 
     return new Promise((resolve, reject) => {
       try {
@@ -50,7 +71,7 @@ export class IndexedDbService {
           throw new Error("IndexedDB not supported in this runtime environment.");
         }
 
-        const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+        const request = window.indexedDB.open(dbName, DB_VERSION);
 
         request.onupgradeneeded = (event: any) => {
           const db = event.target.result;
@@ -121,13 +142,59 @@ export class IndexedDbService {
   // --- Historical Sessions Store ---
   public static async saveSession(session: any): Promise<void> {
     try {
+      const sessions = await this.getSessions();
+      const sameDayIdx = sessions.findIndex(s => new Date(s.timestamp).toDateString() === new Date(session.timestamp).toDateString());
+      let mergedSession = session;
+      if (sameDayIdx !== -1) {
+        const existing = sessions[sameDayIdx];
+        const totalDur = existing.durationSeconds + session.durationSeconds;
+        mergedSession = {
+          ...existing,
+          durationSeconds: totalDur,
+          qualityScore: Math.round(((existing.qualityScore * existing.durationSeconds) + (session.qualityScore * session.durationSeconds)) / totalDur),
+          avgLoadLbs: Math.round(((existing.avgLoadLbs * existing.durationSeconds) + (session.avgLoadLbs * session.durationSeconds)) / totalDur * 10) / 10,
+          peakLoadLbs: Math.max(existing.peakLoadLbs, session.peakLoadLbs),
+          fatigueScore: Math.round(((existing.fatigueScore * existing.durationSeconds) + (session.fatigueScore * session.durationSeconds)) / totalDur),
+          stabilityScore: Math.round(((existing.stabilityScore * existing.durationSeconds) + (session.stabilityScore * session.durationSeconds)) / totalDur),
+          complianceRate: Math.round(((existing.complianceRate * existing.durationSeconds) + (session.complianceRate * session.durationSeconds)) / totalDur),
+        };
+        // Re-grade
+        const score = mergedSession.qualityScore;
+        mergedSession.grade = score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : score >= 60 ? "D" : "F";
+      }
       await this.executeTransaction("historical_sessions", "readwrite", (store) =>
-        store.put(session)
+        store.put(mergedSession)
       );
+
+      // Write-through to localStorage to ensure synchronous fallback access is always up to date
+      const updatedSessions = sameDayIdx !== -1 
+        ? sessions.map((s, i) => i === sameDayIdx ? mergedSession : s)
+        : [session, ...sessions].slice(0, 50);
+      this.setLocalStorageFallback("posturecare_historical_sessions_v2", updatedSessions);
     } catch {
       const sessions = this.getLocalStorageFallback("posturecare_historical_sessions_v2", []);
-      const updated = [session, ...sessions].slice(0, 50);
-      this.setLocalStorageFallback("posturecare_historical_sessions_v2", updated);
+      const sameDayIdx = sessions.findIndex(s => new Date(s.timestamp).toDateString() === new Date(session.timestamp).toDateString());
+      if (sameDayIdx !== -1) {
+        const existing = sessions[sameDayIdx];
+        const totalDur = existing.durationSeconds + session.durationSeconds;
+        const mergedSession = {
+          ...existing,
+          durationSeconds: totalDur,
+          qualityScore: Math.round(((existing.qualityScore * existing.durationSeconds) + (session.qualityScore * session.durationSeconds)) / totalDur),
+          avgLoadLbs: Math.round(((existing.avgLoadLbs * existing.durationSeconds) + (session.avgLoadLbs * session.durationSeconds)) / totalDur * 10) / 10,
+          peakLoadLbs: Math.max(existing.peakLoadLbs, session.peakLoadLbs),
+          fatigueScore: Math.round(((existing.fatigueScore * existing.durationSeconds) + (session.fatigueScore * session.durationSeconds)) / totalDur),
+          stabilityScore: Math.round(((existing.stabilityScore * existing.durationSeconds) + (session.stabilityScore * session.durationSeconds)) / totalDur),
+          complianceRate: Math.round(((existing.complianceRate * existing.durationSeconds) + (session.complianceRate * session.durationSeconds)) / totalDur),
+        };
+        const score = mergedSession.qualityScore;
+        mergedSession.grade = score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : score >= 60 ? "D" : "F";
+        sessions[sameDayIdx] = mergedSession;
+        this.setLocalStorageFallback("posturecare_historical_sessions_v2", sessions);
+      } else {
+        const updated = [session, ...sessions].slice(0, 50);
+        this.setLocalStorageFallback("posturecare_historical_sessions_v2", updated);
+      }
     }
   }
 

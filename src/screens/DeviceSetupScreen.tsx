@@ -245,7 +245,7 @@ export const DeviceSetupScreen: React.FC = () => {
 
   const handleSkipSetup = () => {
     dispatch(setSkippedSetup(true));
-    dispatch(setIsSimulating(true));
+    dispatch(setIsSimulating(false));
     navigate('/');
   };
 

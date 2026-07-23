@@ -8,10 +8,10 @@ import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 import { Toaster } from 'react-hot-toast';
-import { store, persistor, RootState, setAuthLoading, login, logout } from './store/store';
+import { store, persistor, RootState, setAuthLoading, login, logout, checkDailyReset } from './store/store';
 import { auth, db } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Layout } from './components/layout/Layout';
 import { SyncManager } from './components/sync/SyncManager';
 import { SlouchAlarmManager } from './components/posture/SlouchAlarmManager';
@@ -64,6 +64,10 @@ function AppContent() {
   const dispatch = useDispatch();
 
   useEffect(() => {
+    dispatch(checkDailyReset());
+  }, [dispatch]);
+
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         if (firebaseUser.isAnonymous) {
@@ -97,7 +101,36 @@ function AppContent() {
         } else {
           try {
             const userDocRef = doc(db, 'users', firebaseUser.uid);
-            const userDoc = await getDoc(userDocRef);
+            let userDoc = await getDoc(userDocRef);
+
+            // If user doc doesn't exist under this uid but the user has an email,
+            // query if there's an existing user document registered under their email (e.g. from prior login/registration)
+            if (!userDoc.exists() && firebaseUser.email) {
+              try {
+                const usersRef = collection(db, 'users');
+                const q = query(usersRef, where('email', '==', firebaseUser.email));
+                const querySnapshot = await getDocs(q);
+                
+                if (!querySnapshot.empty) {
+                  const existingDoc = querySnapshot.docs[0];
+                  const existingData = existingDoc.data();
+                  
+                  // Copy and merge the existing user profile details to the new Google user uid
+                  await setDoc(userDocRef, {
+                    ...existingData,
+                    uid: firebaseUser.uid,
+                    id: firebaseUser.uid,
+                    lastLoginAt: serverTimestamp()
+                  }, { merge: true });
+                  
+                  // Re-fetch the newly created/merged userDoc
+                  userDoc = await getDoc(userDocRef);
+                }
+              } catch (emailQueryErr) {
+                console.warn('Error querying existing user by email in App.tsx:', emailQueryErr);
+              }
+            }
+
             if (userDoc.exists()) {
               const data = userDoc.data();
               if (data.age && data.height && data.weight) {
@@ -117,8 +150,19 @@ function AppContent() {
                 return;
               }
             } else {
-              // No Firestore user document. Check if we have a local cached user profile for this uid
-              const localProfileStr = localStorage.getItem(`user_profile_${firebaseUser.uid}`) || localStorage.getItem('local_user_profile');
+              // No Firestore user document. Check if we have a local cached user profile for this uid or email
+              let localProfileStr = localStorage.getItem(`user_profile_${firebaseUser.uid}`);
+              if (!localProfileStr && firebaseUser.email) {
+                const localAccounts = JSON.parse(localStorage.getItem('local_accounts') || '[]');
+                const matchedLocal = localAccounts.find((acc: any) => acc.email?.toLowerCase() === firebaseUser.email?.toLowerCase());
+                if (matchedLocal && matchedLocal.profile) {
+                  localProfileStr = JSON.stringify(matchedLocal.profile);
+                }
+              }
+              if (!localProfileStr) {
+                localProfileStr = localStorage.getItem('local_user_profile');
+              }
+
               if (localProfileStr) {
                 try {
                   const localData = JSON.parse(localProfileStr);

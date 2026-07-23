@@ -5,6 +5,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { RootState, setChatOpen } from '../../store/store';
 import { cn } from '../../lib/utils';
 import { chatWithAssistant } from '../../services/geminiService';
+import Markdown from 'react-markdown';
 
 interface Message {
   id: string;
@@ -26,6 +27,35 @@ export const ChatAssistant: React.FC = () => {
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const [startY, setStartY] = useState<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setStartY(e.touches[0].clientY);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (startY === null) return;
+    const currentY = e.touches[0].clientY;
+    const diffY = startY - currentY; // positive indicates swipe up
+    
+    if (diffY > 50) {
+      setIsFullScreen(true);
+      setStartY(null);
+    } else if (diffY < -50) {
+      if (isFullScreen) {
+        setIsFullScreen(false);
+      } else {
+        dispatch(setChatOpen(false));
+      }
+      setStartY(null);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    setStartY(null);
+  };
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -193,28 +223,48 @@ export const ChatAssistant: React.FC = () => {
             initial={{ y: '100%', opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: '100%', opacity: 0 }}
-            className="fixed bottom-0 left-0 right-0 h-[72vh] bg-white rounded-t-[32px] shadow-2xl z-[60] flex flex-col border-t border-border"
+            className={cn(
+              "fixed bottom-0 left-0 right-0 bg-white shadow-2xl z-[60] flex flex-col border-t border-border transition-all duration-300 ease-out",
+              isFullScreen ? "h-[100dvh] rounded-t-none" : "h-[72vh] rounded-t-[32px]"
+            )}
           >
             {/* Header */}
-            <div className="p-6 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-t-[32px] flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-                  <Bot size={24} />
-                </div>
-                <div>
-                  <h3 className="font-bold text-lg leading-tight">PostureAI</h3>
-                  <div className="flex items-center gap-1.5 text-xs text-greenLight">
-                    <div className="w-2 h-2 bg-greenLight rounded-full animate-pulse" />
-                    Online · Score: {Math.round(posture.score)}% 🌟
+            <div className="p-4 sm:p-6 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-t-[32px] flex flex-col gap-3">
+              {/* Swipe Handle Indicator */}
+              <div 
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+                onClick={() => setIsFullScreen(!isFullScreen)}
+                className="w-full pb-3 flex flex-col items-center justify-center cursor-row-resize select-none border-b border-white/5"
+              >
+                <div className="w-16 h-1.5 bg-white/25 rounded-full hover:bg-white/40 transition-colors" />
+                <span className="text-[7.5px] font-black tracking-widest text-slate-300 uppercase mt-1">
+                  {isFullScreen ? 'Swipe/Tap down to shrink' : 'Swipe/Tap up for full screen'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between mt-1">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center p-2 shadow-lg shadow-indigo-500/20 shrink-0">
+                    <Sparkles size={22} className="text-white fill-white/10" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base sm:text-lg leading-tight">PostureAI</h3>
+                    <div className="flex items-center gap-1.5 text-xs text-greenLight">
+                      <div className="w-1.5 h-1.5 bg-greenLight rounded-full animate-pulse" />
+                      Online · Score: {Math.round(posture.score)}% 🌟
+                    </div>
                   </div>
                 </div>
+
+                <button 
+                  onClick={() => dispatch(setChatOpen(false))}
+                  className="p-2.5 bg-white/10 hover:bg-white/15 rounded-full transition-colors"
+                >
+                  <X size={18} />
+                </button>
               </div>
-              <button 
-                onClick={() => dispatch(setChatOpen(false))}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors"
-              >
-                <X size={20} />
-              </button>
             </div>
 
             {/* Messages Area */}
@@ -231,10 +281,12 @@ export const ChatAssistant: React.FC = () => {
                   )}
                 >
                   <div className={cn(
-                    "w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold",
-                    msg.isAi ? "bg-green/10 text-green" : "bg-green text-white"
+                    "w-8 h-8 rounded-xl flex-shrink-0 flex items-center justify-center p-1.5",
+                    msg.isAi ? "bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-sm" : "bg-green text-white rounded-full"
                   )}>
-                    {msg.isAi ? <Bot size={16} /> : (user?.photo ? <img src={user.photo} className="w-full h-full rounded-full" /> : (user?.name?.[0] || 'U'))}
+                    {msg.isAi ? (
+                      <Sparkles size={16} className="text-white fill-white/10" />
+                    ) : (user?.photo ? <img src={user.photo} className="w-full h-full rounded-full" /> : (user?.name?.[0] || 'U'))}
                   </div>
                   <div className={cn(
                     "px-4 py-2.5 rounded-2xl text-sm shadow-sm",
@@ -242,7 +294,26 @@ export const ChatAssistant: React.FC = () => {
                       ? "bg-white text-slate-800 rounded-bl-none border border-slate-100" 
                       : "bg-indigo-600 text-white rounded-br-none shadow-premium"
                   )}>
-                    {msg.text}
+                    {msg.isAi ? (
+                      <div className="prose text-xs leading-relaxed font-sans space-y-1.5 text-slate-800">
+                        <Markdown
+                          components={{
+                            h1: ({node, ...props}) => <h1 className="text-sm font-black text-slate-900 uppercase tracking-wider mt-3 mb-1 border-b border-slate-100 pb-0.5" {...props} />,
+                            h2: ({node, ...props}) => <h2 className="text-xs font-black text-indigo-600 uppercase tracking-wider mt-2 mb-0.5" {...props} />,
+                            h3: ({node, ...props}) => <h3 className="text-xs font-bold text-slate-800 mt-1.5 mb-0.5" {...props} />,
+                            p: ({node, ...props}) => <p className="text-slate-600 leading-relaxed my-1" {...props} />,
+                            ul: ({node, ...props}) => <ul className="list-disc pl-4 my-1 space-y-0.5 text-slate-600" {...props} />,
+                            ol: ({node, ...props}) => <ol className="list-decimal pl-4 my-1 space-y-0.5 text-slate-600" {...props} />,
+                            li: ({node, ...props}) => <li className="text-slate-600 leading-relaxed" {...props} />,
+                            strong: ({node, ...props}) => <strong className="font-black text-slate-900" {...props} />,
+                          }}
+                        >
+                          {msg.text}
+                        </Markdown>
+                      </div>
+                    ) : (
+                      msg.text
+                    )}
                     <div className={cn(
                       "text-[10px] mt-1 opacity-50",
                       msg.isAi ? "text-slate-500" : "text-white/70"

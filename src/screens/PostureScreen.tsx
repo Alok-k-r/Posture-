@@ -31,8 +31,9 @@ import { cn } from '../lib/utils';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import { generatePostureSummary } from '../services/geminiService';
 import { db, auth } from '../lib/firebase';
-import { collection, addDoc, serverTimestamp, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, query, orderBy, limit, getDocs, where, updateDoc } from 'firebase/firestore';
 import Markdown from 'react-markdown';
+import { SessionService } from '../services/sessionService';
 import { LocalModelService } from '../services/localModelService';
 
 export const PostureScreen: React.FC = () => {
@@ -45,6 +46,64 @@ export const PostureScreen: React.FC = () => {
   const [summary, setSummary] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [activeAiTab, setActiveAiTab] = useState<'biomechanics' | 'markov' | 'parameters' | 'compliance'>('biomechanics');
+  const [sessions, setSessions] = useState<any[]>([]);
+
+  const [liveBreakElapsed, setLiveBreakElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!activeBreak) {
+      setLiveBreakElapsed(0);
+      return;
+    }
+    const update = () => {
+      const startMs = new Date(activeBreak.startTime).getTime();
+      const elapsed = Math.max(1, Math.round((Date.now() - startMs) / 1000));
+      setLiveBreakElapsed(elapsed);
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [activeBreak]);
+
+  const formatBreakDuration = (sec: number) => {
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m} min`;
+  };
+
+  const formatBreakTime = (ts: string) => {
+    try {
+      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  };
+
+  // Subscribe to real-time session database updates across Firestore and LocalStorage
+  useEffect(() => {
+    const activeUserId = user?.id || auth.currentUser?.uid || 'guest';
+    const unsubscribe = SessionService.subscribeToSessions(activeUserId, (fetched) => {
+      setSessions(fetched);
+    });
+    return () => unsubscribe();
+  }, [user?.id, auth.currentUser?.uid]);
+
+  // Aggregate Today's Completed Sessions + Live Active Session for Daily Milestones
+  const todayStr = new Date().toDateString();
+  const todayCompletedSessions = sessions.filter(s => {
+    if (!s.date && !s.startTime) return false;
+    return new Date(s.date || s.startTime || '').toDateString() === todayStr;
+  });
+
+  const completedTodayGoodSecs = todayCompletedSessions.reduce((acc, s) => acc + (s.goodSessionSeconds || 0), 0);
+  const completedTodayTotalSecs = todayCompletedSessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+  const completedTodayMaxFocus = todayCompletedSessions.reduce((max, s) => Math.max(max, s.maxFocusStreak || s.maxFocusDuration || 0), 0);
+
+  const combinedTodayGoodSecs = completedTodayGoodSecs + (goodSessionSeconds || 0);
+  const combinedTodayTotalSecs = completedTodayTotalSecs + (totalSessionSeconds || 0);
+  const combinedTodayFocusMax = Math.max(completedTodayMaxFocus, maxFocusDuration || 0);
+  const completedSessionsCount = sessions.length;
 
   // Compute live 5-Layer Posture Biometrics and AI Diagnostics (Layer 2 - 4)
   const localAI = LocalModelService.recalculateAllBiomechanicalMetrics(
@@ -101,6 +160,19 @@ export const PostureScreen: React.FC = () => {
     return () => clearInterval(interval);
   }, [isSimulating, autoOscillate, dispatch]);
 
+  // Auto-off simulation timer (shuts off automatically in 1 minute / 60 seconds)
+  useEffect(() => {
+    if (!isSimulating) return;
+
+    const timer = setTimeout(() => {
+      dispatch(setIsSimulating(false));
+      dispatch(setDeviceStatus(false));
+      dispatch(setHasPaired(false));
+    }, 60000);
+
+    return () => clearTimeout(timer);
+  }, [isSimulating, dispatch]);
+
   const handleSaveSession = async () => {
     if (!user) {
       alert("Please login first to save your session.");
@@ -118,27 +190,47 @@ export const PostureScreen: React.FC = () => {
 
     try {
       const localKey = `posture_sessions_${user.id}`;
-      const sessionData = {
-        id: 'local-' + Date.now(),
-        date: posture.sessionStartTime || new Date().toISOString(),
-        startTime: posture.sessionStartTime || new Date().toISOString(),
-        endTime: new Date().toISOString(),
-        duration: totalSessionSeconds,
-        score: score,
-        slouches: incidents || 0,
-        goodSessionSeconds: posture.goodSessionSeconds || 0,
-        warnSessionSeconds: posture.warnSessionSeconds || 0,
-        maxFocusStreak: maxFocusDuration,
-        status: statusLabel,
-      };
+      const newSessionDateStr = posture.sessionStartTime || new Date().toISOString();
+      const newSessionDay = new Date(newSessionDateStr).toDateString();
 
-      try {
-        const existingLocal = JSON.parse(localStorage.getItem(localKey) || '[]');
+      const existingLocal = JSON.parse(localStorage.getItem(localKey) || '[]');
+      const sameDayIdx = existingLocal.findIndex((s: any) => new Date(s.date).toDateString() === newSessionDay);
+
+      let sessionData;
+      if (sameDayIdx !== -1) {
+        // COMBINE SESSIONS of the same day
+        const existing = existingLocal[sameDayIdx];
+        const totalDur = existing.duration + totalSessionSeconds;
+        const mergedScore = Math.round(((existing.score * existing.duration) + (score * totalSessionSeconds)) / totalDur);
+        sessionData = {
+          ...existing,
+          endTime: new Date().toISOString(),
+          duration: totalDur,
+          score: mergedScore,
+          slouches: (existing.slouches || 0) + (incidents || 0),
+          goodSessionSeconds: (existing.goodSessionSeconds || 0) + (posture.goodSessionSeconds || 0),
+          warnSessionSeconds: (existing.warnSessionSeconds || 0) + (posture.warnSessionSeconds || 0),
+          maxFocusStreak: Math.max(existing.maxFocusStreak || 0, maxFocusDuration || 0),
+          status: mergedScore >= thresholds.good ? 'Excellent' : mergedScore >= thresholds.warn ? 'Fair' : 'Poor'
+        };
+        existingLocal[sameDayIdx] = sessionData;
+      } else {
+        sessionData = {
+          id: 'local-' + Date.now(),
+          date: newSessionDateStr,
+          startTime: newSessionDateStr,
+          endTime: new Date().toISOString(),
+          duration: totalSessionSeconds,
+          score: score,
+          slouches: incidents || 0,
+          goodSessionSeconds: posture.goodSessionSeconds || 0,
+          warnSessionSeconds: posture.warnSessionSeconds || 0,
+          maxFocusStreak: maxFocusDuration,
+          status: statusLabel,
+        };
         existingLocal.unshift(sessionData);
-        localStorage.setItem(localKey, JSON.stringify(existingLocal));
-      } catch (localErr) {
-        console.error("Failed to write session to localStorage:", localErr);
       }
+      localStorage.setItem(localKey, JSON.stringify(existingLocal));
 
       // Trigger On-Device Model Tuning & Learning Cycle (Layer 4)
       const localReportData = LocalModelService.recalculateAllBiomechanicalMetrics(
@@ -164,26 +256,63 @@ export const PostureScreen: React.FC = () => {
 
       if (auth.currentUser) {
         const sessionsRef = collection(db, 'users', auth.currentUser.uid, 'sessions');
-        await addDoc(sessionsRef, {
-          date: sessionData.date,
-          startTime: sessionData.startTime,
-          endTime: sessionData.endTime,
-          duration: totalSessionSeconds,
-          score: score,
-          slouches: incidents || 0,
-          goodSessionSeconds: posture.goodSessionSeconds || 0,
-          warnSessionSeconds: posture.warnSessionSeconds || 0,
-          maxFocusStreak: maxFocusDuration,
-          status: statusLabel,
-          timestamp: serverTimestamp()
-        });
+        
+        // Find existing same day session in Firestore to merge
+        const todayStart = new Date(newSessionDateStr);
+        todayStart.setHours(0,0,0,0);
+        const todayEnd = new Date(newSessionDateStr);
+        todayEnd.setHours(23,59,59,999);
+        
+        const q = query(
+          sessionsRef,
+          where('date', '>=', todayStart.toISOString()),
+          where('date', '<=', todayEnd.toISOString()),
+          limit(1)
+        );
+        const snapshot = await getDocs(q);
+        
+        if (!snapshot.empty) {
+          const docRef = snapshot.docs[0].ref;
+          const existing = snapshot.docs[0].data();
+          const totalDur = existing.duration + totalSessionSeconds;
+          const mergedScore = Math.round(((existing.score * existing.duration) + (score * totalSessionSeconds)) / totalDur);
+          await updateDoc(docRef, {
+            duration: totalDur,
+            score: mergedScore,
+            slouches: (existing.slouches || 0) + (incidents || 0),
+            goodSessionSeconds: (existing.goodSessionSeconds || 0) + (posture.goodSessionSeconds || 0),
+            warnSessionSeconds: (existing.warnSessionSeconds || 0) + (posture.warnSessionSeconds || 0),
+            maxFocusStreak: Math.max(existing.maxFocusStreak || 0, maxFocusDuration || 0),
+            status: mergedScore >= thresholds.good ? 'Excellent' : mergedScore >= thresholds.warn ? 'Fair' : 'Poor',
+            endTime: new Date().toISOString()
+          });
+        } else {
+          await addDoc(sessionsRef, {
+            date: sessionData.date,
+            startTime: sessionData.startTime,
+            endTime: sessionData.endTime,
+            duration: totalSessionSeconds,
+            score: score,
+            slouches: incidents || 0,
+            goodSessionSeconds: posture.goodSessionSeconds || 0,
+            warnSessionSeconds: posture.warnSessionSeconds || 0,
+            maxFocusStreak: maxFocusDuration,
+            status: statusLabel,
+            timestamp: serverTimestamp()
+          });
+        }
       }
+
+      // Sync and update unified session cache immediately
+      SessionService.fetchUnifiedSessions(user?.id || auth.currentUser?.uid).catch(err => {
+        console.warn('Session refresh post-save notice:', err);
+      });
 
       dispatch(setIsRecordingSession(false));
       dispatch(resetSessionStats());
-      alert("🎉 Posture session saved successfully! Your personalized Posture AI model has been tuned on-device based on this session.");
+      alert("🎉 Posture session saved and combined successfully! Your personalized Posture AI model has been tuned on-device based on this session.");
     } catch (error: any) {
-      console.error("Failed to save session to cloud:", error);
+      console.error("Failed to save session:", error);
       alert("Sync fallback active: Session saved locally. It will upload once network connection is restored.");
       dispatch(setIsRecordingSession(false));
       dispatch(resetSessionStats());
@@ -356,12 +485,54 @@ export const PostureScreen: React.FC = () => {
     return list;
   };
 
-  // Gamified Milestones/Badges system state
+  // Gamified Milestones/Badges system state calculated based on current day
+  const todaySessionRecordedCount = todayCompletedSessions.length + (totalSessionSeconds > 0 ? 1 : 0);
+
   const mockMilestones = [
-    { id: 'guardian', title: 'Spine Guardian', desc: 'Maintain ≥80% score for 5 mins', target: 300, current: goodSessionSeconds, unlocked: goodSessionSeconds >= 300, icon: Shield, color: 'text-emerald-500' },
-    { id: 'resilience', title: 'Streak Champion', desc: 'Log a 3-day posture streak', target: 3, current: streak.current, unlocked: streak.current >= 3, icon: Flame, color: 'text-orange' },
-    { id: 'pioneer', title: 'First Stance', desc: 'Complete your first session', target: 10, current: totalSessionSeconds, unlocked: totalSessionSeconds >= 10, icon: Award, color: 'text-indigo-600' },
-    { id: 'focus', title: 'Deep Focus Master', desc: 'Hold focus streak for 120s', target: 120, current: maxFocusDuration, unlocked: maxFocusDuration >= 120, icon: Zap, color: 'text-purple-500' },
+    { 
+      id: 'guardian', 
+      title: 'Spine Guardian', 
+      desc: 'Maintain ≥80% score for 5 mins today', 
+      target: 300, 
+      current: combinedTodayGoodSecs, 
+      unlocked: combinedTodayGoodSecs >= 300, 
+      icon: Shield, 
+      color: 'text-emerald-500',
+      isTime: true
+    },
+    { 
+      id: 'resilience', 
+      title: 'Streak Champion', 
+      desc: 'Log a 3-day posture streak', 
+      target: 3, 
+      current: streak.current, 
+      unlocked: streak.current >= 3, 
+      icon: Flame, 
+      color: 'text-orange',
+      isTime: false
+    },
+    { 
+      id: 'pioneer', 
+      title: 'First Stance', 
+      desc: 'Log a session today', 
+      target: 1, 
+      current: todaySessionRecordedCount, 
+      unlocked: todaySessionRecordedCount >= 1, 
+      icon: Award, 
+      color: 'text-indigo-600',
+      isTime: false
+    },
+    { 
+      id: 'focus', 
+      title: 'Deep Focus Master', 
+      desc: 'Hold 120s focus streak today', 
+      target: 120, 
+      current: combinedTodayFocusMax, 
+      unlocked: combinedTodayFocusMax >= 120, 
+      icon: Zap, 
+      color: 'text-purple-500',
+      isTime: true
+    },
   ];
 
   return (
@@ -612,35 +783,6 @@ export const PostureScreen: React.FC = () => {
               </div>
             )}
           </div>
-
-          {/* Card 3: Posture Trend Graph */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 rounded-[32px] shadow-soft space-y-4">
-            <div className="flex justify-between items-center pb-2.5 border-b border-slate-50 text-left">
-              <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">Posture Trend Log</h3>
-              <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Live stream feed</span>
-            </div>
-            <div className="h-28 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                  <defs>
-                    <linearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="100%">
-                      <stop offset="5%" stopColor={getStatusColor(angle)} stopOpacity={0.15}/>
-                      <stop offset="95%" stopColor={getStatusColor(angle)} stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <Area 
-                    type="monotone" 
-                    dataKey="angle" 
-                    stroke={getStatusColor(angle)} 
-                    strokeWidth={2} 
-                    fillOpacity={1} 
-                    fill="url(#trendGradient)" 
-                    animationDuration={1000}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
         </div>
 
         {/* RIGHT COLUMN: BIOMETRIC INTEL & HISTORIC PERFORMANCE (lg:col-span-7) */}
@@ -685,6 +827,184 @@ export const PostureScreen: React.FC = () => {
             </div>
           </div>
 
+          {/* Card 7: Rest & Recovery Decompression Analysis */}
+          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 sm:p-7 rounded-[32px] space-y-5 shadow-soft text-left">
+            <div className="flex items-center gap-3 pb-2.5 border-b border-slate-50">
+              <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center shrink-0">
+                <TrendingDown className="w-5 h-5" />
+              </div>
+              <div className="space-y-0.5">
+                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Recovery After Break Analysis</h4>
+                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Lactic and tension coefficients during postural shifts</p>
+              </div>
+            </div>
+
+            {completedSessionsCount <= 1 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-center px-4 bg-slate-50/50 rounded-[24px] border border-dashed border-slate-200">
+                <TrendingDown className="w-8 h-8 text-slate-300 mb-2 animate-pulse" />
+                <h5 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">Break Recovery Analytics Lock</h5>
+                <p className="text-[10px] text-slate-400 font-semibold max-w-[320px] leading-relaxed">
+                  More than 1 completed session is required to perform paraspinal recovery and micro-break efficiency analytics. Please complete and save your upcoming session to unlock this clinical panel.
+                </p>
+                {!isRecordingSession && (
+                  <button 
+                    onClick={() => dispatch(setIsRecordingSession(true))}
+                    className="mt-3.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full text-[9px] font-black uppercase tracking-widest transition-all active:scale-95"
+                  >
+                    Start Recording
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                  <div className="bg-slate-50 p-3 rounded-xl space-y-1">
+                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Pre-Break Fatigue</span>
+                    <div className="text-base font-black text-rose-500">
+                      {activeBreak 
+                        ? `${activeBreak.preBreakFatigue || 0}%` 
+                        : (breakHistory && breakHistory.length > 0 
+                            ? `${breakHistory[0].preBreakFatigue}%` 
+                            : `${totalSessionSeconds > 0 ? Math.min(98, Math.max(0, Math.round((totalSessionSeconds / 60) * 1.2 + incidents * 5.0))) : 0}%`)}
+                    </div>
+                    <p className="text-[9px] text-slate-400 font-medium leading-tight">
+                      {activeBreak ? 'Active Break Snapshot' : (breakHistory && breakHistory.length > 0 ? 'Last Rest log' : (totalSessionSeconds > 0 ? 'Live Monitoring' : 'No session recorded'))}
+                    </p>
+                  </div>
+                  <div className="bg-slate-50 p-3 rounded-xl space-y-1">
+                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Post-Break Fatigue</span>
+                    <div className="text-base font-black text-indigo-600">
+                      {activeBreak
+                        ? (() => {
+                            const pre = activeBreak.preBreakFatigue || 0;
+                            const reliefFraction = liveBreakElapsed > 0 ? (1 - Math.exp(-liveBreakElapsed / 240)) : 0;
+                            const relief = Math.min(98, Math.max(0, Math.round(reliefFraction * 100)));
+                            const cleared = (pre * relief) / 100;
+                            return `${Math.max(0, Math.round(pre - cleared))}%`;
+                          })()
+                        : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].postBreakFatigue ?? (100 - (breakHistory[0] as any).postBreakResilience || 0)}%` : '0%')}
+                    </div>
+                    <p className="text-[9px] text-slate-400 font-medium leading-tight">
+                      {activeBreak ? `Resting (${formatBreakDuration(liveBreakElapsed)})...` : (breakHistory && breakHistory.length > 0 ? 'After last rest break' : 'No rest break taken')}
+                    </p>
+                  </div>
+                  <div className="bg-slate-50 p-3 rounded-xl space-y-1">
+                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Thoracic Relief</span>
+                    <div className="text-base font-black text-emerald-500">
+                      {activeBreak
+                        ? `${Math.min(98, Math.max(0, Math.round((1 - Math.exp(-liveBreakElapsed / 240)) * 100)))}%`
+                        : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].thoracicStressRelief}%` : '0%')}
+                    </div>
+                    <p className="text-[9px] text-slate-400 font-medium leading-tight">
+                      {activeBreak ? 'Decompressing...' : (breakHistory && breakHistory.length > 0 ? 'Achieved decompression' : 'No rest break taken')}
+                    </p>
+                  </div>
+                </div>
+
+                {breakHistory && breakHistory.length > 0 && (
+                  <div className="pt-4 border-t border-slate-100 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider block">Micro-Break Restoration Log</span>
+                      <span className="text-[8px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                        Synced to Cloud
+                      </span>
+                    </div>
+                    <div className="max-h-36 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                      {breakHistory.slice(0, 5).map((br, idx) => (
+                        <div key={br.id || idx} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100/60 transition-all hover:bg-slate-100/50">
+                          <div className="flex items-center gap-2">
+                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse animate-duration-1000" />
+                            <div>
+                              <span className="text-[9px] font-black text-slate-700 block">
+                                Micro-Rest #{breakHistory.length - idx}
+                              </span>
+                              <span className="text-[8px] font-bold text-slate-400 uppercase block mt-0.5">
+                                {formatBreakTime(br.timestamp)} • {formatBreakDuration(br.durationSeconds)} duration
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="text-right">
+                              <span className="text-[7px] font-black text-rose-400 uppercase tracking-wider block">Pre-Fatigue</span>
+                              <span className="text-[10px] font-black text-rose-500 leading-none">{br.preBreakFatigue}%</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[7px] font-black text-indigo-400 uppercase tracking-wider block">Post-Fatigue</span>
+                              <span className="text-[10px] font-black text-indigo-500 leading-none">{br.postBreakFatigue ?? (100 - (br as any).postBreakResilience || 0)}%</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[7px] font-black text-emerald-400 uppercase tracking-wider block">Relief</span>
+                              <span className="text-[10px] font-black text-emerald-500 leading-none">+{br.thoracicStressRelief}%</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Card 9: Active Training Milestones */}
+          <div className="space-y-3">
+            <div className="px-1 text-left">
+              <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Active Training Milestones</h4>
+              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Gamified achievements for posture stabilizer training</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              {mockMilestones.map((ms, msIdx) => {
+                const IconComponent = ms.icon;
+                return (
+                  <div 
+                    key={msIdx} 
+                    className={cn(
+                      "p-4 rounded-[24px] border text-center flex flex-col items-center justify-between min-h-[140px] transition-all hover:border-slate-200 cursor-default relative overflow-hidden",
+                      ms.unlocked 
+                        ? "bg-white border-indigo-100 shadow-soft" 
+                        : "bg-slate-50/50 border-slate-100 text-slate-400"
+                    )}
+                  >
+                    {/* Visual Unlocked Highlight */}
+                    {ms.unlocked && (
+                      <div className="absolute top-0 right-0 w-8 h-8 bg-indigo-500/10 rounded-bl-[16px] flex items-center justify-center">
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                      </div>
+                    )}
+
+                    <div className={cn(
+                      "w-9 h-9 rounded-full flex items-center justify-center mx-auto mb-2",
+                      ms.unlocked ? "bg-indigo-50 text-indigo-600" : "bg-slate-100 text-slate-300"
+                    )}>
+                      <IconComponent className="w-5 h-5" />
+                    </div>
+
+                    <div className="space-y-0.5">
+                      <h5 className={cn("text-[11px] font-black", ms.unlocked ? "text-slate-800" : "text-slate-500")}>{ms.title}</h5>
+                      <p className="text-[8px] leading-tight font-semibold text-slate-400">{ms.desc}</p>
+                    </div>
+
+                    <div className="w-full mt-2">
+                      <div className="flex justify-between text-[7px] font-black text-slate-400 mb-0.5">
+                        <span>Progress</span>
+                        <span>
+                          {ms.isTime ? `${Math.round(ms.current / 60)}m / ${Math.round(ms.target / 60)}m` : `${Math.min(ms.target, ms.current)} / ${ms.target}`}
+                        </span>
+                      </div>
+                      <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                        <div 
+                          className={cn("h-full transition-all duration-500", ms.unlocked ? "bg-indigo-600" : "bg-slate-300")}
+                          style={{ width: `${Math.min(100, (ms.current / ms.target) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Card 5: Posture AI Clinician Card */}
           <div className="relative rounded-[32px] overflow-hidden p-6 bg-gradient-to-br from-indigo-950 via-slate-900 to-violet-950 border border-indigo-500/20 shadow-premium group text-left">
             <div className="absolute -top-12 -right-12 w-32 h-32 bg-indigo-500/20 blur-2xl rounded-full pointer-events-none" />
@@ -721,25 +1041,71 @@ export const PostureScreen: React.FC = () => {
                 </div>
               </div>
 
-              <button
-                onClick={handleGenerateSummary}
-                disabled={isSummarizing}
-                className="px-5 py-3 rounded-2xl bg-white text-slate-900 font-black text-[9px] uppercase tracking-widest hover:bg-slate-100 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-lg shrink-0 min-w-[130px] disabled:opacity-50 self-start sm:self-auto cursor-pointer"
-              >
-                {isSummarizing ? (
-                  <>
-                    <RefreshCw size={10} className="animate-spin" />
-                    Analyzing...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={10} className="text-indigo-600 animate-bounce" />
-                    Get Report
-                    <ChevronRight size={10} className="stroke-[3]" />
-                  </>
+              <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                {summary && (
+                  <button
+                    onClick={() => setSummary(null)}
+                    className="px-3 py-3 rounded-2xl bg-white/10 text-white font-black text-[9px] uppercase tracking-widest hover:bg-white/15 active:scale-95 transition-all flex items-center justify-center gap-1 border border-white/10 cursor-pointer"
+                  >
+                    Clear
+                  </button>
                 )}
-              </button>
+                <button
+                  onClick={handleGenerateSummary}
+                  disabled={isSummarizing}
+                  className="px-5 py-3 rounded-2xl bg-white text-slate-900 font-black text-[9px] uppercase tracking-widest hover:bg-slate-100 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-lg shrink-0 min-w-[130px] disabled:opacity-50 cursor-pointer"
+                >
+                  {isSummarizing ? (
+                    <>
+                      <RefreshCw size={10} className="animate-spin" />
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={10} className="text-indigo-600 animate-bounce" />
+                      {summary ? "Regenerate" : "Get Report"}
+                      <ChevronRight size={10} className="stroke-[3]" />
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
+
+            {summary && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                className="mt-6 pt-6 border-t border-white/10 relative z-10 text-slate-200"
+              >
+                <div className="bg-white/5 border border-white/10 rounded-[24px] p-5 sm:p-6 space-y-4 shadow-inner max-h-[500px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
+                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                    <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-2">
+                      <Sparkles size={12} className="animate-pulse" />
+                      Clinical Biomechanical Analysis
+                    </span>
+                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider">
+                      Generative Report
+                    </span>
+                  </div>
+                  <div className="prose prose-invert text-[11px] leading-relaxed font-sans space-y-2.5">
+                    <Markdown
+                      components={{
+                        h1: ({node, ...props}) => <h1 className="text-xs font-black text-white uppercase tracking-wider mt-4 mb-2 border-b border-white/10 pb-1" {...props} />,
+                        h2: ({node, ...props}) => <h2 className="text-[11px] font-black text-indigo-300 uppercase tracking-wider mt-3 mb-1" {...props} />,
+                        h3: ({node, ...props}) => <h3 className="text-[11px] font-bold text-violet-300 mt-2.5 mb-0.5" {...props} />,
+                        p: ({node, ...props}) => <p className="text-slate-300 leading-relaxed my-1 font-medium" {...props} />,
+                        ul: ({node, ...props}) => <ul className="list-disc pl-5 my-1.5 space-y-1 text-slate-300" {...props} />,
+                        ol: ({node, ...props}) => <ol className="list-decimal pl-5 my-1.5 space-y-1 text-slate-300" {...props} />,
+                        li: ({node, ...props}) => <li className="text-slate-300 leading-relaxed font-medium" {...props} />,
+                        strong: ({node, ...props}) => <strong className="font-black text-white" {...props} />,
+                      }}
+                    >
+                      {summary}
+                    </Markdown>
+                  </div>
+                </div>
+              </motion.div>
+            )}
           </div>
 
           {/* Card 6: Posture Intelligence Dashboard (Layer 2 - 4) */}
@@ -1026,190 +1392,6 @@ export const PostureScreen: React.FC = () => {
             </div>
           </div>
 
-          {/* Card 7: Rest & Recovery Decompression Analysis */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 sm:p-7 rounded-[32px] space-y-5 shadow-soft text-left">
-            <div className="flex items-center gap-3 pb-2.5 border-b border-slate-50">
-              <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center shrink-0">
-                <TrendingDown className="w-5 h-5" />
-              </div>
-              <div className="space-y-0.5">
-                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Recovery After Break Analysis</h4>
-                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Lactic and tension coefficients during postural shifts</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-              <div className="bg-slate-50 p-3 rounded-xl space-y-1">
-                <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Pre-Break Fatigue</span>
-                <div className="text-base font-black text-rose-500">
-                  {activeBreak 
-                    ? `${activeBreak.preBreakFatigue}%` 
-                    : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].preBreakFatigue}%` : `${Math.min(95, 20 + (incidents * 8))}%`)}
-                </div>
-                <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                  {activeBreak ? 'Frozen snapshot' : (breakHistory && breakHistory.length > 0 ? 'Last Rest log' : 'Dynamic estimation')}
-                </p>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-xl space-y-1">
-                <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Post-Break Resilience</span>
-                <div className="text-base font-black text-emerald-500">
-                  {activeBreak
-                    ? `${Math.min(100, Math.round(20 + ((activeBreak.durationSeconds || 0) * 0.5)))}%`
-                    : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].postBreakResilience}%` : `${Math.max(10, Math.min(60, 20 + (incidents * 3) - 15))}%`)}
-                </div>
-                <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                  {activeBreak ? 'Restoring...' : (breakHistory && breakHistory.length > 0 ? 'Achieved resilience' : 'Potential restoration')}
-                </p>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-xl space-y-1">
-                <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Thoracic Relief</span>
-                <div className="text-base font-black text-indigo-600">
-                  {activeBreak
-                    ? `${Math.min(100, Math.round(15 + ((activeBreak.durationSeconds || 0) * 0.8)))}%`
-                    : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].thoracicStressRelief}%` : `${Math.max(15, Math.min(85, 30 + (incidents > 0 ? 25 : 10)))}%`)}
-                </div>
-                <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                  {activeBreak ? 'Decompressing...' : (breakHistory && breakHistory.length > 0 ? 'Achieved decompression' : 'Estimated stress relief')}
-                </p>
-              </div>
-            </div>
-
-            {breakHistory && breakHistory.length > 0 && (
-              <div className="pt-4 border-t border-slate-100 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider block">Micro-Break Restoration Log</span>
-                  <span className="text-[8px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
-                    Synced to Cloud
-                  </span>
-                </div>
-                <div className="max-h-36 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-                  {breakHistory.slice(0, 5).map((br, idx) => (
-                    <div key={br.id || idx} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100/60 transition-all hover:bg-slate-100/50">
-                      <div className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse animate-duration-1000" />
-                        <div>
-                          <span className="text-[9px] font-black text-slate-700 block">
-                            Micro-Rest #{breakHistory.length - idx}
-                          </span>
-                          <span className="text-[8px] font-bold text-slate-400 uppercase block mt-0.5">
-                            {new Date(br.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} • {br.durationSeconds}s duration
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <div className="text-right">
-                          <span className="text-[7px] font-black text-rose-400 uppercase tracking-wider block">Pre-Fatigue</span>
-                          <span className="text-[10px] font-black text-rose-500 leading-none">{br.preBreakFatigue}%</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-[7px] font-black text-emerald-400 uppercase tracking-wider block">Post-Resil</span>
-                          <span className="text-[10px] font-black text-emerald-500 leading-none">{br.postBreakResilience}%</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Card 8: Sitting Session Timeline */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 sm:p-7 rounded-[32px] space-y-5 shadow-soft text-left">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-50">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center shrink-0">
-                  <Gauge className="w-5 h-5" />
-                </div>
-                <div className="space-y-0.5">
-                  <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Sitting Session Timeline</h4>
-                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Dynamic sequence log of active session events</p>
-                </div>
-              </div>
-              <span className="px-2 py-0.5 rounded-full bg-slate-100 text-[8px] font-black uppercase tracking-wider text-slate-500 border border-slate-200">
-                {isRecordingSession ? 'Recording Logs' : 'Standby'}
-              </span>
-            </div>
-
-            <div className="relative pl-5 border-l-2 border-slate-100 space-y-5 pt-1">
-              {getTimelineEvents().map((evt, idx) => (
-                <div key={idx} className="relative">
-                  {/* Timeline marker node */}
-                  <div className="absolute -left-[28px] top-0.5 w-3.5 h-3.5 rounded-full bg-white border-2 border-indigo-500 flex items-center justify-center shadow-soft">
-                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                  </div>
-
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest shrink-0">{evt.time}</span>
-                      <span className="text-slate-300 text-[8px] shrink-0">•</span>
-                      <h5 className="text-xs font-black text-slate-800 leading-tight">{evt.title}</h5>
-                    </div>
-                    <p className="text-[10px] font-semibold text-slate-500 leading-relaxed max-w-xl">
-                      {evt.desc}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Card 9: Active Training Milestones */}
-          <div className="space-y-3">
-            <div className="px-1 text-left">
-              <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Active Training Milestones</h4>
-              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Gamified achievements for posture stabilizer training</p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              {mockMilestones.map((ms, msIdx) => {
-                const IconComponent = ms.icon;
-                return (
-                  <div 
-                    key={msIdx} 
-                    className={cn(
-                      "p-4 rounded-[24px] border text-center flex flex-col items-center justify-between min-h-[140px] transition-all hover:border-slate-200 cursor-default relative overflow-hidden",
-                      ms.unlocked 
-                        ? "bg-white border-indigo-100 shadow-soft" 
-                        : "bg-slate-50/50 border-slate-100 text-slate-400"
-                    )}
-                  >
-                    {/* Visual Unlocked Highlight */}
-                    {ms.unlocked && (
-                      <div className="absolute top-0 right-0 w-8 h-8 bg-indigo-500/10 rounded-bl-[16px] flex items-center justify-center">
-                        <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                      </div>
-                    )}
-
-                    <div className={cn(
-                      "w-9 h-9 rounded-full flex items-center justify-center mx-auto mb-2",
-                      ms.unlocked ? "bg-indigo-50 text-indigo-600" : "bg-slate-100 text-slate-300"
-                    )}>
-                      <IconComponent className="w-5 h-5" />
-                    </div>
-
-                    <div className="space-y-0.5">
-                      <h5 className={cn("text-[11px] font-black", ms.unlocked ? "text-slate-800" : "text-slate-500")}>{ms.title}</h5>
-                      <p className="text-[8px] leading-tight font-semibold text-slate-400">{ms.desc}</p>
-                    </div>
-
-                    <div className="w-full mt-2">
-                      <div className="flex justify-between text-[7px] font-black text-slate-400 mb-0.5">
-                        <span>Progress</span>
-                        <span>{Math.min(ms.target, ms.current)}/{ms.target}</span>
-                      </div>
-                      <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
-                        <div 
-                          className={cn("h-full transition-all duration-500", ms.unlocked ? "bg-indigo-600" : "bg-slate-300")}
-                          style={{ width: `${Math.min(100, (ms.current / ms.target) * 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
           {/* Card 10: Biometric Calculation Logic Guide */}
           <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 rounded-[32px] shadow-soft">
             <details className="group [&_summary::-webkit-details-marker]:hidden border border-slate-150 rounded-2xl overflow-hidden bg-slate-50/40 text-left">
@@ -1251,6 +1433,40 @@ export const PostureScreen: React.FC = () => {
               </div>
             </details>
           </div>
+        </div>
+      </div>
+
+      {/* Bottom-most Full-Width Section: Posture Trend Log */}
+      <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 sm:p-7 rounded-[32px] shadow-soft space-y-4 text-left">
+        <div className="flex justify-between items-center pb-2.5 border-b border-slate-50">
+          <div>
+            <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">Posture Trend Log</h3>
+            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Live stream feed & real-time spinal inclination history</p>
+          </div>
+          <span className="text-[8px] font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100 uppercase tracking-wider animate-pulse">
+            Live Stream Active
+          </span>
+        </div>
+        <div className="h-36 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
+              <defs>
+                <linearGradient id="trendGradientBottom" x1="0" y1="0" x2="0" y2="100%">
+                  <stop offset="5%" stopColor={getStatusColor(angle)} stopOpacity={0.2}/>
+                  <stop offset="95%" stopColor={getStatusColor(angle)} stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <Area 
+                type="monotone" 
+                dataKey="angle" 
+                stroke={getStatusColor(angle)} 
+                strokeWidth={2.5} 
+                fillOpacity={1} 
+                fill="url(#trendGradientBottom)" 
+                animationDuration={800}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       </div>
     </div>

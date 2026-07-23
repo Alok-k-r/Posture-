@@ -22,6 +22,7 @@ interface AuthState {
     age?: number;
     height?: number;
     weight?: number;
+    gender?: 'male' | 'female' | 'other' | '';
     hasAcceptedTerms?: boolean;
   } | null;
   loading: boolean;
@@ -41,6 +42,9 @@ const authSlice = createSlice({
       state.isAuth = true;
       state.user = action.payload;
       state.loading = false;
+      if (typeof window !== 'undefined' && window.localStorage && action.payload?.id) {
+        localStorage.setItem('current_user_id', action.payload.id);
+      }
     },
     logout: (state) => {
       state.isAuth = false;
@@ -49,6 +53,8 @@ const authSlice = createSlice({
       if (typeof window !== 'undefined' && window.localStorage) {
         localStorage.removeItem('login_mode');
         localStorage.removeItem('local_user_profile');
+        localStorage.removeItem('current_user_id');
+        localStorage.removeItem('persist:root');
       }
     },
     setAuthLoading: (state, action: PayloadAction<boolean>) => {
@@ -82,7 +88,7 @@ export interface BreakRecord {
   id: string;
   timestamp: string;
   preBreakFatigue: number;
-  postBreakResilience: number;
+  postBreakFatigue: number;
   thoracicStressRelief: number;
   durationSeconds: number;
 }
@@ -120,6 +126,7 @@ interface PostureState {
   warnSessionSeconds: number;
   integrityScore: number;
   sessionStartTime: string | null;
+  lastActiveDate: string | null;
   // New break tracking properties
   activeBreak: {
     startTime: string;
@@ -132,8 +139,8 @@ interface PostureState {
 const postureSlice = createSlice({
   name: 'posture',
   initialState: {
-    angle: 82,
-    score: 82,
+    angle: 90,
+    score: 100,
     history: [],
     thresholds: { 
       good: 80, 
@@ -150,9 +157,9 @@ const postureSlice = createSlice({
       reminderMessage: "Spine Alignment Alert! Please sit up straight, roll your shoulders back, and protect your back."
     },
     baselineAngle: 90,
-    streak: { current: 5, longest: 8 },
+    streak: { current: 0, longest: 0 },
     isSimulating: false,
-    isRecordingSession: true,
+    isRecordingSession: false,
     autoRecordEnabled: false,
     // Dynamic session stats defaults
     isCurrentlySlouching: false,
@@ -164,13 +171,41 @@ const postureSlice = createSlice({
     warnSessionSeconds: 0,
     integrityScore: 100,
     sessionStartTime: null,
+    lastActiveDate: typeof window !== 'undefined' ? new Date().toISOString().split('T')[0] : null,
     activeBreak: null,
-    breakHistory: [],
+    breakHistory: (() => {
+      try {
+        const raw = typeof window !== 'undefined' ? localStorage.getItem('posture_breaks_history') : null;
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
+      }
+    })(),
   } as PostureState,
   reducers: {
     updateAngle: (state, action: PayloadAction<number>) => {
       const rounded = Math.round(action.payload);
       state.angle = rounded;
+
+      // Auto-check for new calendar day (morning fresh start)
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (state.lastActiveDate && state.lastActiveDate !== todayStr) {
+        state.lastActiveDate = todayStr;
+        state.totalSessionSeconds = 0;
+        state.goodSessionSeconds = 0;
+        state.warnSessionSeconds = 0;
+        state.incidents = 0;
+        state.isCurrentlySlouching = false;
+        state.currentFocusDuration = 0;
+        state.maxFocusDuration = 0;
+        state.integrityScore = 100;
+        state.score = 100;
+        state.isRecordingSession = false;
+        state.sessionStartTime = null;
+        state.activeBreak = null;
+      } else if (!state.lastActiveDate) {
+        state.lastActiveDate = todayStr;
+      }
       
       // Self-heal any stale/undefined fields from old redux-persist cache
       if (state.totalSessionSeconds === undefined || isNaN(state.totalSessionSeconds)) state.totalSessionSeconds = 0;
@@ -191,7 +226,45 @@ const postureSlice = createSlice({
         state.score = state.integrityScore; // Ensure display score represents actual commitment rating while active
       }
     },
+    checkDailyReset: (state) => {
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (!state.lastActiveDate || state.lastActiveDate !== todayStr) {
+        state.lastActiveDate = todayStr;
+        state.totalSessionSeconds = 0;
+        state.goodSessionSeconds = 0;
+        state.warnSessionSeconds = 0;
+        state.incidents = 0;
+        state.isCurrentlySlouching = false;
+        state.currentFocusDuration = 0;
+        state.maxFocusDuration = 0;
+        state.integrityScore = 100;
+        state.score = 100;
+        state.isRecordingSession = false;
+        state.sessionStartTime = null;
+        state.activeBreak = null;
+      }
+    },
     tickSessionStats: (state) => {
+      // Auto-check for new calendar day (morning fresh start)
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (state.lastActiveDate && state.lastActiveDate !== todayStr) {
+        state.lastActiveDate = todayStr;
+        state.totalSessionSeconds = 0;
+        state.goodSessionSeconds = 0;
+        state.warnSessionSeconds = 0;
+        state.incidents = 0;
+        state.isCurrentlySlouching = false;
+        state.currentFocusDuration = 0;
+        state.maxFocusDuration = 0;
+        state.integrityScore = 100;
+        state.score = 100;
+        state.isRecordingSession = false;
+        state.sessionStartTime = null;
+        state.activeBreak = null;
+      } else if (!state.lastActiveDate) {
+        state.lastActiveDate = todayStr;
+      }
+
       // Self-heal any stale/undefined fields from old redux-persist cache
       if (state.totalSessionSeconds === undefined || isNaN(state.totalSessionSeconds)) state.totalSessionSeconds = 0;
       if (state.goodSessionSeconds === undefined || isNaN(state.goodSessionSeconds)) state.goodSessionSeconds = 0;
@@ -291,8 +364,11 @@ const postureSlice = createSlice({
     },
     setIsRecordingSession: (state, action: PayloadAction<boolean>) => {
       state.isRecordingSession = action.payload;
+      try {
+        localStorage.setItem('posturecare_is_recording', action.payload ? 'true' : 'false');
+      } catch {}
       if (action.payload) {
-        // When resuming starting recording, update raw live posture alignment status
+        // When resuming / starting recording, update raw live posture alignment status
         state.isCurrentlySlouching = state.angle < state.thresholds.warn;
         if (!state.sessionStartTime) {
           state.sessionStartTime = new Date().toISOString();
@@ -300,18 +376,24 @@ const postureSlice = createSlice({
 
         // If there was an active break, compile the BreakRecord and push to history
         if (state.activeBreak) {
-          const preBreakFatigue = state.activeBreak.preBreakFatigue;
-          const durationSeconds = state.activeBreak.durationSeconds || 1;
+          const preBreakFatigue = state.activeBreak.preBreakFatigue || 0;
+          const startMs = new Date(state.activeBreak.startTime).getTime();
+          const elapsedSecs = Math.round((Date.now() - startMs) / 1000);
+          const durationSeconds = Math.max(0, Math.max(state.activeBreak.durationSeconds || 0, elapsedSecs));
 
-          // Compute realistic biological recovery percentages based on rest duration (in seconds)
-          const postBreakResilience = Math.min(100, Math.round(20 + (durationSeconds * 0.5)));
-          const thoracicStressRelief = Math.min(100, Math.round(15 + (durationSeconds * 0.8)));
+          // Compute realistic biological recovery based on true exponential relaxation curve
+          // Half-life ~240s (4 mins): 1 min = 22% relief, 2 mins = 39% relief, 5 mins = 71% relief, 10 mins = 92% relief
+          const reliefFraction = durationSeconds > 0 ? (1 - Math.exp(-durationSeconds / 240)) : 0;
+          const thoracicStressRelief = Math.min(98, Math.max(0, Math.round(reliefFraction * 100)));
+          
+          const fatigueCleared = (preBreakFatigue * thoracicStressRelief) / 100;
+          const postBreakFatigue = Math.max(0, Math.round(preBreakFatigue - fatigueCleared));
 
           const breakRecord: BreakRecord = {
             id: 'break-' + Date.now(),
             timestamp: new Date().toISOString(),
             preBreakFatigue,
-            postBreakResilience,
+            postBreakFatigue,
             thoracicStressRelief,
             durationSeconds
           };
@@ -333,11 +415,28 @@ const postureSlice = createSlice({
         }
       } else {
         // Pausing / Taking a break
-        // We only log a real pre-break fatigue if the user has been in active sitting
-        const preBreakFatigue = Math.min(95, 20 + (state.incidents * 8));
+        // Base fatigue comes from last break's postBreakFatigue if available
+        const lastBreak = state.breakHistory && state.breakHistory.length > 0 ? state.breakHistory[0] : null;
+        const baseFatigue = lastBreak ? (lastBreak.postBreakFatigue ?? (100 - (lastBreak as any).postBreakResilience || 0)) : 0;
+
+        const totalSecs = state.totalSessionSeconds || 0;
+        const warnSecs = state.warnSessionSeconds || 0;
+        const incidents = state.incidents || 0;
+
+        let calculatedFatigue = 0;
+        if (totalSecs > 0) {
+          const sittingMins = totalSecs / 60;
+          const durationFatigue = sittingMins * 1.2; // ~1.2% per minute sitting
+          const warnFatigue = (warnSecs / 60) * 2.0;  // extra ~2% per minute slouch warning
+          const slouchPenalty = incidents * 5.0;       // +5% per slouch incident
+          calculatedFatigue = Math.min(98, Math.max(0, Math.round(baseFatigue + durationFatigue + warnFatigue + slouchPenalty)));
+        } else {
+          calculatedFatigue = baseFatigue;
+        }
+
         state.activeBreak = {
           startTime: new Date().toISOString(),
-          preBreakFatigue,
+          preBreakFatigue: calculatedFatigue,
           durationSeconds: 0
         };
       }
@@ -505,12 +604,12 @@ const syncSlice = createSlice({
 
 export const { login, logout, setAuthLoading, updateUser } = authSlice.actions;
 export const { setChatOpen } = uiSlice.actions;
-export const { updateAngle, tickSessionStats, resetSessionStats, setThresholds, recalibrateBaseline, setIsSimulating, setPostureHistory, setIsRecordingSession, setAutoRecordEnabled } = postureSlice.actions;
+export const { updateAngle, tickSessionStats, resetSessionStats, setThresholds, recalibrateBaseline, setIsSimulating, setPostureHistory, setIsRecordingSession, setAutoRecordEnabled, checkDailyReset } = postureSlice.actions;
 export const { setDeviceStatus, setHasPaired, setSkippedSetup, updateBattery, unpairDevice } = deviceSlice.actions;
 export const { addAppointment, removeAppointment, updateAppointment, setAppointmentStatus } = appointmentsSlice.actions;
 export const { setOnlineStatus, addToSyncQueue, removeFromSyncQueue, clearSyncQueue } = syncSlice.actions;
 
-const rootReducer = combineReducers({
+const appReducer = combineReducers({
   auth: authSlice.reducer,
   ui: uiSlice.reducer,
   posture: postureSlice.reducer,
@@ -518,6 +617,13 @@ const rootReducer = combineReducers({
   appointments: appointmentsSlice.reducer,
   sync: syncSlice.reducer,
 });
+
+const rootReducer = (state: any, action: any) => {
+  if (action.type === 'auth/logout') {
+    state = undefined;
+  }
+  return appReducer(state, action);
+};
 
 const persistConfig = {
   key: 'root',

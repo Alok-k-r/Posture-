@@ -8,23 +8,52 @@ import { getDatabase } from 'firebase/database';
 const configs = (import.meta as any).glob('../../firebase-applet-config.json', { eager: true });
 const configKeys = Object.keys(configs);
 
+const metaEnv = (import.meta as any).env || {};
+
+const sanitizeEnvVal = (val: any) => {
+  if (typeof val === 'string') {
+    return val.replace(/^["']|["']$/g, '').trim();
+  }
+  return val;
+};
+
+const envConfig = {
+  apiKey: sanitizeEnvVal(metaEnv.VITE_FIREBASE_API_KEY),
+  authDomain: sanitizeEnvVal(metaEnv.VITE_FIREBASE_AUTH_DOMAIN),
+  projectId: sanitizeEnvVal(metaEnv.VITE_FIREBASE_PROJECT_ID),
+  storageBucket: sanitizeEnvVal(metaEnv.VITE_FIREBASE_STORAGE_BUCKET),
+  messagingSenderId: sanitizeEnvVal(metaEnv.VITE_FIREBASE_MESSAGING_SENDER_ID),
+  appId: sanitizeEnvVal(metaEnv.VITE_FIREBASE_APP_ID),
+  databaseURL: sanitizeEnvVal(metaEnv.VITE_FIREBASE_DATABASE_URL),
+  firestoreDatabaseId: sanitizeEnvVal(metaEnv.VITE_FIREBASE_FIRESTORE_DATABASE_ID) || "(default)"
+};
+
+const hasEnvConfig = !!envConfig.apiKey && !envConfig.apiKey.includes('mock');
+
 const firebaseConfig = configKeys.length > 0
   ? (configs[configKeys[0]] as any).default
-  : {
-      apiKey: "mock-key-for-local-vibration-demo-only",
-      authDomain: "mock-app.firebaseapp.com",
-      projectId: "mock-app",
-      storageBucket: "mock-app.appspot.com",
-      messagingSenderId: "000000000000",
-      appId: "1:000000000000:web:0000000000000000000000",
-      firestoreDatabaseId: "(default)"
-    };
+  : hasEnvConfig
+    ? envConfig
+    : {
+        apiKey: "mock-key-for-local-vibration-demo-only",
+        authDomain: "mock-app.firebaseapp.com",
+        projectId: "mock-app",
+        storageBucket: "mock-app.appspot.com",
+        messagingSenderId: "000000000000",
+        appId: "1:000000000000:web:0000000000000000000000",
+        firestoreDatabaseId: "(default)"
+      };
 
 const app = initializeApp(firebaseConfig);
 // Connects to the specific database configured for the applet (which contains the ESP32 synchronized telemetry data).
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
+
+export const isMockFirebase = !firebaseConfig.apiKey || firebaseConfig.apiKey.includes('mock');
 
 // Setup Firebase Realtime Database
 const rtdbUrl = firebaseConfig.databaseURL || `https://${firebaseConfig.projectId}-default-rtdb.firebaseio.com`;
@@ -84,4 +113,4 @@ async function testConnection() {
   }
 }
 
-testConnection();
+// testConnection();

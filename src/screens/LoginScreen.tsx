@@ -4,21 +4,37 @@ import { useDispatch } from 'react-redux';
 import { login, logout } from '../store/store';
 import { Mail, Lock, LogIn, Shield, User, Ruler, Scale, Calendar, ArrowLeft, AlertCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { auth, googleProvider, db } from '../lib/firebase';
+import { auth, googleProvider, db, handleFirestoreError, OperationType, isMockFirebase } from '../lib/firebase';
 import { 
   signInWithPopup, 
+  signInWithRedirect,
   signInAnonymously, 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword,
-  updateProfile 
+  updateProfile,
+  getRedirectResult,
+  sendEmailVerification,
+  onAuthStateChanged
 } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
+
+const getAvatarUrl = (name: string, selectedGender: string) => {
+  const seed = `${selectedGender || 'other'}-${encodeURIComponent((name || 'User').trim())}`;
+  if (selectedGender === 'male') {
+    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${seed}&accessoriesProbability=10&facialHairProbability=30&top=shortHair,sides,dreads,frizzle,shaggy`;
+  } else if (selectedGender === 'female') {
+    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${seed}&accessoriesProbability=20&facialHairProbability=0&top=longHair,bob,curly,dreads,frida,hijab`;
+  } else {
+    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${seed}&accessoriesProbability=15&facialHairProbability=10`;
+  }
+};
 
 export const LoginScreen: React.FC = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   
-  const [view, setView] = useState<'login' | 'register' | 'details'>('login');
+  const [view, setView] = useState<'login' | 'register' | 'details' | 'verification-pending'>('login');
+  const [isInIframe, setIsInIframe] = useState(false);
   
   // Login State
   const [email, setEmail] = useState('rahul@posturecare.health');
@@ -31,38 +47,167 @@ export const LoginScreen: React.FC = () => {
   const [age, setAge] = useState('');
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
+  const [gender, setGender] = useState<'male' | 'female' | 'other' | ''>('');
   
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Check on mount if there is already an active firebase user who was not logged in fully due to missing details
+  // Set isInIframe on mount
   useEffect(() => {
-    const checkActiveUser = async () => {
-      const firebaseUser = auth.currentUser;
-      if (firebaseUser && !firebaseUser.isAnonymous) {
+    setIsInIframe(window.self !== window.top);
+  }, []);
+
+  // Listen to Auth State changes and process redirect results
+  useEffect(() => {
+    let isMounted = true;
+    
+    const handleRedirectResultCheck = async () => {
+      if (isMockFirebase) {
+        console.log('Skipping redirect result check because Firebase is in mock mode.');
+        return;
+      }
+      console.log('Checking for redirect result...');
+      try {
+        const redirectRes = await getRedirectResult(auth);
+        if (redirectRes && redirectRes.user && isMounted) {
+          console.log('Redirect sign-in success:', redirectRes.user);
+        }
+      } catch (redirectErr: any) {
+        console.warn('Redirect sign-in result check error:', redirectErr);
+        if (isMounted && redirectErr.message && !redirectErr.message.includes('sandbox') && !redirectErr.message.includes('cross-origin')) {
+          setErrorMsg(redirectErr.message);
+        }
+      }
+    };
+    
+    handleRedirectResultCheck();
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!isMounted) return;
+      
+      if (firebaseUser) {
+        console.log('onAuthStateChanged in LoginScreen fired with active user:', firebaseUser.email, 'Anonymous:', firebaseUser.isAnonymous);
+        
+        // If they are anonymous, don't auto-redirect here, let them proceed
+        if (firebaseUser.isAnonymous) {
+          setIsLoading(false);
+          return;
+        }
+
+        // Email verification check: if they signed up with email/password and are not verified, show verification pending!
+        const isPasswordProvider = firebaseUser.providerData.some(p => p.providerId === 'password');
+        if (isPasswordProvider && !firebaseUser.emailVerified) {
+          console.log('User has unverified email. Routing to verification-pending view.');
+          setView('verification-pending');
+          setIsLoading(false);
+          return;
+        }
+
         setIsLoading(true);
         try {
           const userDocRef = doc(db, 'users', firebaseUser.uid);
-          const userDoc = await getDoc(userDocRef);
+          let userDoc = await getDoc(userDocRef);
+          
+          if (!userDoc.exists() && firebaseUser.email) {
+            // Check if user has an existing registered document with the same email
+            try {
+              const usersRef = collection(db, 'users');
+              const q = query(usersRef, where('email', '==', firebaseUser.email));
+              const querySnapshot = await getDocs(q);
+              
+              if (!querySnapshot.empty) {
+                const existingDoc = querySnapshot.docs[0];
+                const existingData = existingDoc.data();
+                
+                // Copy/Merge existing info to new google user document
+                await setDoc(userDocRef, {
+                  ...existingData,
+                  uid: firebaseUser.uid,
+                  id: firebaseUser.uid,
+                  lastLoginAt: serverTimestamp()
+                }, { merge: true });
+                
+                userDoc = await getDoc(userDocRef);
+              }
+            } catch (emailQueryErr) {
+              console.warn('Error querying existing user by email on mount check:', emailQueryErr);
+            }
+          }
+
           if (userDoc.exists()) {
             const data = userDoc.data();
-            if (!data.age || !data.height || !data.weight) {
+            if (data.age && data.height && data.weight) {
+              // Existing user with fully completed biometric details. Forward directly to Home page!
+              console.log('User has full biometric details. Dispatching login to Redux and navigating home.');
+              dispatch(login({
+                id: firebaseUser.uid,
+                name: data.name || data.displayName || firebaseUser.displayName || 'User',
+                email: data.email || firebaseUser.email || '',
+                photo: data.photo || data.photoURL || firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`,
+                age: data.age,
+                height: data.height,
+                weight: data.weight,
+                gender: data.gender || '',
+                hasAcceptedTerms: data.hasAcceptedTerms || localStorage.getItem(`terms_accepted_${firebaseUser.uid}`) === 'true' || localStorage.getItem(`terms_accepted_fallback_${firebaseUser.uid}`) === 'true'
+              }));
+              navigate('/');
+              return;
+            } else {
+              console.log('User is missing biometric details. Switching to details collection view.');
               setView('details');
               setFullName(data.name || firebaseUser.displayName || '');
+              if (data.gender) setGender(data.gender);
             }
           } else {
-            setView('details');
-            setFullName(firebaseUser.displayName || '');
+            // No profile found in Firestore. Try searching local account registry for same email address
+            let foundLocal = false;
+            if (firebaseUser.email) {
+              const localAccounts = JSON.parse(localStorage.getItem('local_accounts') || '[]');
+              const matchedLocal = localAccounts.find((acc: any) => acc.email?.toLowerCase() === firebaseUser.email?.toLowerCase());
+              if (matchedLocal && matchedLocal.profile) {
+                const profile = matchedLocal.profile;
+                // Save it back for this specific google UID
+                localStorage.setItem(`user_profile_${firebaseUser.uid}`, JSON.stringify(profile));
+                
+                dispatch(login({
+                  id: firebaseUser.uid,
+                  name: profile.name,
+                  email: profile.email,
+                  photo: profile.photo,
+                  age: profile.age,
+                  height: profile.height,
+                  weight: profile.weight,
+                  gender: profile.gender || '',
+                  hasAcceptedTerms: localStorage.getItem(`terms_accepted_${firebaseUser.uid}`) === 'true' || localStorage.getItem(`terms_accepted_fallback_${firebaseUser.uid}`) === 'true'
+                }));
+                foundLocal = true;
+                console.log('Matched local profile for Google user. Navigating home.');
+                navigate('/');
+                return;
+              }
+            }
+            
+            if (!foundLocal) {
+              console.log('No user profile found in Firestore or local registry. Switching to details collection view.');
+              setView('details');
+              setFullName(firebaseUser.displayName || '');
+            }
           }
         } catch (e) {
           console.warn('Error verifying existing user details (using local fallback if applicable):', e);
         } finally {
           setIsLoading(false);
         }
+      } else {
+        setIsLoading(false);
       }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
     };
-    checkActiveUser();
-  }, []);
+  }, [dispatch, navigate]);
 
   // Email Login Handler
   const handleLogin = async (e: React.FormEvent) => {
@@ -170,6 +315,14 @@ export const LoginScreen: React.FC = () => {
       
       // 3. Fetch from Firestore to check details
       if (user) {
+        if (!isLocalLogin && !user.emailVerified) {
+          console.log('Email not verified. Redirecting to verification pending screen.');
+          setRegEmail(user.email || email);
+          setView('verification-pending');
+          setIsLoading(false);
+          return;
+        }
+
         const userDocRef = doc(db, 'users', user.uid);
         let userDoc: any = null;
         try {
@@ -268,6 +421,11 @@ export const LoginScreen: React.FC = () => {
       setIsLoading(false);
       return;
     }
+    if (!gender) {
+      setErrorMsg('Please specify your gender');
+      setIsLoading(false);
+      return;
+    }
     if (isNaN(ageNum) || ageNum <= 0 || ageNum > 120) {
       setErrorMsg('Please enter a valid age (1-120)');
       setIsLoading(false);
@@ -284,20 +442,33 @@ export const LoginScreen: React.FC = () => {
       return;
     }
     
+    const photoUrl = getAvatarUrl(fullName, gender);
+    
     try {
       let user: any = null;
       let isLocalOnly = false;
-
+ 
       // 1. Try to create firebase user
       try {
         const userCredential = await createUserWithEmailAndPassword(auth, regEmail, regPassword);
         user = userCredential.user;
         
-        // Update firebase profile display name
+        // Update firebase profile display name and photoURL
         try {
-          await updateProfile(user, { displayName: fullName });
+          await updateProfile(user, { 
+            displayName: fullName,
+            photoURL: photoUrl
+          });
         } catch (profileErr) {
-          console.warn('Could not update Firebase profile display name:', profileErr);
+          console.warn('Could not update Firebase profile display name and photo:', profileErr);
+        }
+
+        // Send Email Verification
+        try {
+          await sendEmailVerification(user);
+          console.log('Verification email sent to:', regEmail);
+        } catch (verificationErr) {
+          console.error('Failed to send verification email:', verificationErr);
         }
       } catch (authErr: any) {
         console.warn('Firebase user registration failed, continuing with local offline registry...', authErr);
@@ -314,7 +485,7 @@ export const LoginScreen: React.FC = () => {
             uid: localId,
             displayName: fullName,
             email: regEmail,
-            photoURL: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(fullName)}`
+            photoURL: photoUrl
           };
           isLocalOnly = true;
         } else {
@@ -322,13 +493,13 @@ export const LoginScreen: React.FC = () => {
         }
       }
       
-      const photoUrl = user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(fullName)}`;
       const userProfile = {
         name: fullName,
         email: regEmail,
         age: ageNum,
         height: heightNum,
         weight: weightNum,
+        gender: gender,
         id: user.uid,
         photo: photoUrl,
         createdAt: new Date().toISOString()
@@ -357,20 +528,25 @@ export const LoginScreen: React.FC = () => {
         localStorage.setItem('local_accounts', JSON.stringify(localAccounts));
       }
       
-      // 3. Dispatch login to Redux
-      dispatch(login({
-        id: user.uid,
-        name: fullName,
-        email: regEmail,
-        photo: photoUrl,
-        age: ageNum,
-        height: heightNum,
-        weight: weightNum,
-        hasAcceptedTerms: false
-      }));
-      
-      setIsLoading(false);
-      navigate('/');
+      // 3. Complete authentication registration flow
+      if (!isLocalOnly) {
+        setView('verification-pending');
+        setIsLoading(false);
+      } else {
+        dispatch(login({
+          id: user.uid,
+          name: fullName,
+          email: regEmail,
+          photo: photoUrl,
+          age: ageNum,
+          height: heightNum,
+          weight: weightNum,
+          gender: gender,
+          hasAcceptedTerms: false
+        }));
+        setIsLoading(false);
+        navigate('/');
+      }
     } catch (err: any) {
       console.warn('Email registration error:', err);
       let friendlyError = 'Registration failed. Please check details and try again.';
@@ -388,12 +564,208 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  // Google Sign In Handler
-  const handleGoogleSignIn = async () => {
+  // Email Verification Handlers
+  const handleCheckVerification = async () => {
+    if (isLoading) return;
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
+      const user = auth.currentUser;
+      if (user) {
+        await user.reload();
+        const refreshedUser = auth.currentUser;
+        
+        if (refreshedUser && refreshedUser.emailVerified) {
+          console.log('Email verified successfully! Loading profile from Firestore...');
+          const userDocRef = doc(db, 'users', refreshedUser.uid);
+          const userDoc = await getDoc(userDocRef);
+          
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            dispatch(login({
+              id: refreshedUser.uid,
+              name: data.name || refreshedUser.displayName || 'Rahul',
+              email: data.email || refreshedUser.email || '',
+              photo: data.photo || refreshedUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${refreshedUser.uid}`,
+              age: data.age,
+              height: data.height,
+              weight: data.weight,
+              gender: data.gender || '',
+              hasAcceptedTerms: data.hasAcceptedTerms || localStorage.getItem(`terms_accepted_${refreshedUser.uid}`) === 'true' || localStorage.getItem(`terms_accepted_fallback_${refreshedUser.uid}`) === 'true'
+            }));
+            navigate('/');
+          } else {
+            setView('details');
+          }
+        } else {
+          setErrorMsg('Email not verified yet. Please check your inbox and spam folder, click the link, and try again.');
+        }
+      } else {
+        setErrorMsg('No active user session found. Please sign in again.');
+        setView('login');
+      }
+    } catch (err: any) {
+      console.error('Error checking verification status:', err);
+      setErrorMsg(err.message || 'Verification check failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setErrorMsg(null);
+    try {
+      const user = auth.currentUser;
+      if (user) {
+        await sendEmailVerification(user);
+        alert('Verification email has been resent to ' + user.email + '. Please check your inbox.');
+      } else {
+        setErrorMsg('Session expired. Please log in again.');
+        setView('login');
+      }
+    } catch (err: any) {
+      console.error('Error resending verification email:', err);
+      setErrorMsg(err.message || 'Failed to resend verification email.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancelVerification = async () => {
+    setIsLoading(true);
+    setErrorMsg(null);
+    try {
+      await auth.signOut();
+      setView('login');
+    } catch (err) {
+      console.warn('Error signing out:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const getGoogleAuthErrorMessage = (popupErr: any, redirectErr: any, isFrame: boolean): string => {
+    const err = redirectErr || popupErr || {};
+    const code = err.code || popupErr?.code || '';
+    const message = err.message || popupErr?.message || '';
+    
+    console.error('Parsing Google Auth Error:', { code, message, isFrame, popupErr, redirectErr });
+
+    if (code === 'auth/unauthorized-domain' || message.includes('unauthorized-domain') || message.includes('Unauthorized domain')) {
+      const currentDomain = window.location.hostname;
+      return `Domain Authorization Required: The domain "${currentDomain}" is not authorized in your Firebase Project. Please go to your Firebase Console > Authentication > Settings > Authorized Domains, and add "${currentDomain}" to the list of authorized domains.`;
+    }
+    
+    if (code === 'auth/operation-not-allowed' || message.includes('operation-not-allowed')) {
+      return 'Google Sign-In is not enabled in your Firebase Project. Please go to your Firebase Console > Authentication > Sign-in method, and enable "Google" as a sign-in provider.';
+    }
+
+    if (code === 'auth/popup-blocked' || message.includes('popup-blocked')) {
+      return 'The sign-in popup was blocked by your browser. Please allow popups for this site, or try again.';
+    }
+
+    if (code === 'auth/popup-closed-by-user' || message.includes('popup-closed-by-user')) {
+      return 'The sign-in popup was closed before completing authentication. Please try again.';
+    }
+
+    if (code === 'auth/web-storage-unsupported' || message.includes('web-storage-unsupported') || message.includes('third-party-cookies') || message.includes('Storage is disabled')) {
+      return 'Third-party cookies or web storage are disabled/blocked by your browser settings. Please enable them or disable tracking protection for this tab to allow Google Sign-In to complete.';
+    }
+
+    if (isFrame) {
+      return 'Google Sign-In is blocked in this preview frame by browser security policies. Please click "Open in New Tab" at the top of the login box to run in a standalone tab.';
+    }
+
+    // Default friendly message with the raw error details
+    return `Google Sign-In failed: ${message || 'Browser security policy or cross-origin restrictions blocked the operation.'} Please check that popups are allowed and you are running in a standalone tab, or sign in with your email and password.`;
+  };
+
+  // Google Sign In Handler
+  const handleGoogleSignIn = async () => {
+    if (isLoading) return; // Prevent duplicate requests
+    setIsLoading(true);
+    setErrorMsg(null);
+
+    if (isMockFirebase) {
+      console.warn('Google Sign-In running in mock mode. Bypassing with secure local virtual Google account...');
+      try {
+        const localAccounts = JSON.parse(localStorage.getItem('local_accounts') || '[]');
+        const googleAccount = localAccounts.find((acc: any) => acc.profile?.id?.startsWith('local-google-') || acc.profile?.id?.startsWith('google-local-') || acc.email?.includes('google-explorer'));
+        
+        if (googleAccount && googleAccount.profile) {
+          const profile = googleAccount.profile;
+          console.log('Found existing local Google account:', profile);
+          
+          localStorage.setItem('login_mode', 'local');
+          localStorage.setItem('local_user_profile', JSON.stringify(profile));
+          localStorage.setItem(`user_profile_${profile.id}`, JSON.stringify(profile));
+          
+          const accepted = localStorage.getItem(`terms_accepted_${profile.id}`) === 'true' || 
+                           localStorage.getItem(`terms_accepted_fallback_${profile.id}`) === 'true';
+          
+          dispatch(login({
+            id: profile.id,
+            name: profile.name,
+            email: profile.email,
+            photo: profile.photo,
+            age: profile.age,
+            height: profile.height,
+            weight: profile.weight,
+            gender: profile.gender || '',
+            hasAcceptedTerms: accepted
+          }));
+          
+          setIsLoading(false);
+          navigate('/');
+          return;
+        }
+        
+        const virtualGoogleId = 'local-google-' + Date.now();
+        localStorage.setItem('login_mode', 'local');
+        
+        // Log them in as complete, or if they need to complete details:
+        setFullName('Google Explorer');
+        setRegEmail('google-explorer@posturecare.health');
+        setGender('');
+        setView('details');
+      } catch (err: any) {
+        setErrorMsg('Failed to run mock login bypass.');
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+    
+    // Add OAuth scopes
+    googleProvider.addScope('openid');
+    googleProvider.addScope('email');
+    googleProvider.addScope('profile');
+    
+    try {
+      let result;
+      try {
+        // Desktop browser standard flow
+        result = await signInWithPopup(auth, googleProvider);
+      } catch (popupErr: any) {
+        console.warn('signInWithPopup failed, trying signInWithRedirect fallback:', popupErr);
+        
+        // If it's a domain/provider error, throw it immediately rather than masking it behind redirect failure
+        if (popupErr?.code === 'auth/unauthorized-domain' || popupErr?.code === 'auth/operation-not-allowed') {
+          throw popupErr;
+        }
+
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return; // Stop execution as page redirects
+        } catch (redirectErr: any) {
+          console.error('signInWithRedirect failed:', redirectErr);
+          const friendlyMessage = getGoogleAuthErrorMessage(popupErr, redirectErr, isInIframe);
+          throw new Error(friendlyMessage);
+        }
+      }
+      
       const user = result.user;
       
       // Check if user exists in Firestore and has completed bio details
@@ -402,55 +774,174 @@ export const LoginScreen: React.FC = () => {
       try {
         userDoc = await getDoc(userDocRef);
       } catch (dbErr) {
-        console.warn('Firestore fetch failed for Google user:', dbErr);
+        handleFirestoreError(dbErr, OperationType.GET, `users/${user.uid}`);
+      }
+
+      // If the user document does not exist under the Google UID but we have an email address,
+      // query Firestore for an existing user document with the same email (e.g. registered under email/password)
+      if (userDoc && !userDoc.exists() && user.email) {
+        try {
+          const usersRef = collection(db, 'users');
+          const q = query(usersRef, where('email', '==', user.email));
+          const querySnapshot = await getDocs(q);
+          
+          if (!querySnapshot.empty) {
+            const existingDoc = querySnapshot.docs[0];
+            const existingData = existingDoc.data();
+            
+            // Copy and merge the existing user profile details to the new Google user uid
+            await setDoc(userDocRef, {
+              ...existingData,
+              uid: user.uid,
+              id: user.uid,
+              lastLoginAt: serverTimestamp()
+            }, { merge: true });
+            
+            // Re-fetch the newly created/merged userDoc
+            userDoc = await getDoc(userDocRef);
+          }
+        } catch (emailQueryErr) {
+          console.warn('Error querying existing user by email in handleGoogleSignIn:', emailQueryErr);
+        }
       }
 
       if (userDoc && userDoc.exists()) {
+        // Document exists, update lastLoginAt only
+        try {
+          await setDoc(userDocRef, {
+            lastLoginAt: serverTimestamp()
+          }, { merge: true });
+        } catch (updateErr) {
+          handleFirestoreError(updateErr, OperationType.WRITE, `users/${user.uid}`);
+        }
+
         const data = userDoc.data();
         if (data.age && data.height && data.weight) {
           dispatch(login({
             id: user.uid,
-            name: data.name || user.displayName || 'User',
+            name: data.name || data.displayName || user.displayName || 'User',
             email: data.email || user.email || '',
-            photo: data.photo || user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`,
+            photo: data.photo || data.photoURL || user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`,
             age: data.age,
             height: data.height,
             weight: data.weight,
+            gender: data.gender || '',
             hasAcceptedTerms: data.hasAcceptedTerms || localStorage.getItem(`terms_accepted_${user.uid}`) === 'true' || localStorage.getItem(`terms_accepted_fallback_${user.uid}`) === 'true'
           }));
           navigate('/');
         } else {
           // Document exists but missing biometric details
-          setFullName(data.name || user.displayName || '');
+          setFullName(data.name || data.displayName || user.displayName || '');
+          if (data.gender) setGender(data.gender);
           setView('details');
         }
       } else {
-        // Entirely new Google Sign-in user
+        // Document does not exist, create it as a new Google Sign-in user
+        try {
+          await setDoc(userDocRef, {
+            uid: user.uid,
+            displayName: user.displayName || '',
+            email: user.email || '',
+            photoURL: user.photoURL || '',
+            provider: 'google',
+            createdAt: serverTimestamp(),
+            lastLoginAt: serverTimestamp()
+          });
+        } catch (createDocErr) {
+          handleFirestoreError(createDocErr, OperationType.WRITE, `users/${user.uid}`);
+        }
+        
         setFullName(user.displayName || '');
         setView('details');
       }
     } catch (error: any) {
-      console.warn('Google Sign In Error (bypassing with virtual account):', error);
-      const isSandboxPolicy = error.message?.includes('sandbox') || 
-                              error.message?.includes('disallowed') || 
-                              error.message?.includes('iframe') || 
-                              error.code === 'auth/popup-closed-by-user' || 
-                              error.message?.toLowerCase().includes('api-key') || 
-                              error.code?.toLowerCase().includes('api-key');
+      console.warn('Google Sign In Error:', error);
       
-      if (isSandboxPolicy || 
-          error.code === 'auth/operation-not-allowed' || 
-          error.code === 'auth/invalid-api-key' || 
-          error.code === 'auth/api-key-not-valid') {
+      const isSandboxPolicy = isMockFirebase || 
+                              error.message?.includes('sandbox') || 
+                              error.message?.includes('disallowed') || 
+                              error.message?.includes('iframe');
+      
+      if (isSandboxPolicy) {
         console.warn('Google Sign-In blocked by environment. Bypassing with secure local virtual Google account...');
-        const virtualGoogleId = 'google-local-' + Date.now();
+        
+        // Check if there is an existing local account that was created via Google Sign-In
+        const localAccounts = JSON.parse(localStorage.getItem('local_accounts') || '[]');
+        const googleAccount = localAccounts.find((acc: any) => acc.profile?.id?.startsWith('local-google-') || acc.profile?.id?.startsWith('google-local-') || acc.email?.includes('google-explorer'));
+        
+        if (googleAccount && googleAccount.profile) {
+          const profile = googleAccount.profile;
+          console.log('Found existing local Google account:', profile);
+          
+          localStorage.setItem('login_mode', 'local');
+          localStorage.setItem('local_user_profile', JSON.stringify(profile));
+          localStorage.setItem(`user_profile_${profile.id}`, JSON.stringify(profile));
+          
+          const accepted = localStorage.getItem(`terms_accepted_${profile.id}`) === 'true' || 
+                           localStorage.getItem(`terms_accepted_fallback_${profile.id}`) === 'true';
+          
+          dispatch(login({
+            id: profile.id,
+            name: profile.name,
+            email: profile.email,
+            photo: profile.photo,
+            age: profile.age,
+            height: profile.height,
+            weight: profile.weight,
+            gender: profile.gender || '',
+            hasAcceptedTerms: accepted
+          }));
+          
+          setIsLoading(false);
+          navigate('/');
+          return;
+        }
+        
+        const virtualGoogleId = 'local-google-' + Date.now();
         localStorage.setItem('login_mode', 'local');
         
         // Log them in as complete, or if they need to complete details:
         setFullName('Google Explorer');
+        setRegEmail('google-explorer@posturecare.health');
+        setGender('');
         setView('details');
       } else {
-        setErrorMsg('Sign in failed. Check console for details.');
+        // Custom user-friendly error messages for specific Firebase codes
+        let friendlyError = 'Google Sign In failed. Please try again.';
+        const code = error.code;
+        
+        switch (code) {
+          case 'auth/popup-closed-by-user':
+            friendlyError = 'The sign-in popup was closed before completing authentication. Please try again.';
+            break;
+          case 'auth/popup-blocked':
+            friendlyError = 'The sign-in popup was blocked by your browser. Please allow popups or try again.';
+            break;
+          case 'auth/cancelled-popup-request':
+            friendlyError = 'The sign-in popup request was cancelled. Please try again.';
+            break;
+          case 'auth/network-request-failed':
+            friendlyError = 'A network error occurred. Please check your internet connection and try again.';
+            break;
+          case 'auth/account-exists-with-different-credential':
+            friendlyError = 'An account already exists with the same email but different sign-in credentials.';
+            break;
+          case 'auth/operation-not-allowed':
+            friendlyError = 'Google Sign In is not enabled. Please contact support or check your Firebase console.';
+            break;
+          case 'auth/unauthorized-domain':
+            friendlyError = 'This domain is not authorized for Firebase Authentication.';
+            break;
+          case 'auth/internal-error':
+            friendlyError = 'An internal Firebase error occurred. Please try again later.';
+            break;
+          default:
+            if (error.message) {
+              friendlyError = error.message;
+            }
+            break;
+        }
+        setErrorMsg(friendlyError);
       }
     } finally {
       setIsLoading(false);
@@ -466,8 +957,7 @@ export const LoginScreen: React.FC = () => {
     // Fallback to local virtual uid if no real firebase user is authenticated
     const firebaseUser = auth.currentUser;
     const uid = firebaseUser?.uid || 'local-google-' + Date.now();
-    const emailStr = firebaseUser?.email || 'google-explorer@posturecare.health';
-    const photoUrl = firebaseUser?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(fullName)}`;
+    const emailStr = firebaseUser?.email || regEmail.trim() || 'google-explorer@posturecare.health';
     
     const ageNum = parseInt(age, 10);
     const heightNum = parseFloat(height);
@@ -475,6 +965,16 @@ export const LoginScreen: React.FC = () => {
     
     if (!fullName.trim()) {
       setErrorMsg('Please enter your full name');
+      setIsLoading(false);
+      return;
+    }
+    if (!emailStr.trim() || !emailStr.includes('@')) {
+      setErrorMsg('Please enter a valid email address');
+      setIsLoading(false);
+      return;
+    }
+    if (!gender) {
+      setErrorMsg('Please select your gender');
       setIsLoading(false);
       return;
     }
@@ -494,6 +994,8 @@ export const LoginScreen: React.FC = () => {
       return;
     }
     
+    const photoUrl = getAvatarUrl(fullName, gender);
+    
     try {
       const userProfile = {
         name: fullName,
@@ -501,6 +1003,7 @@ export const LoginScreen: React.FC = () => {
         age: ageNum,
         height: heightNum,
         weight: weightNum,
+        gender: gender,
         id: uid,
         photo: photoUrl,
         createdAt: new Date().toISOString()
@@ -510,21 +1013,48 @@ export const LoginScreen: React.FC = () => {
       localStorage.setItem('local_user_profile', JSON.stringify(userProfile));
       localStorage.setItem(`user_profile_${uid}`, JSON.stringify(userProfile));
 
+      // Save to local registry so account creation and authentication is fully actualized
+      const localAccounts = JSON.parse(localStorage.getItem('local_accounts') || '[]');
+      const existingIdx = localAccounts.findIndex((acc: any) => acc.email.toLowerCase() === emailStr.toLowerCase());
+      if (existingIdx >= 0) {
+        localAccounts[existingIdx] = {
+          email: emailStr,
+          password: '',
+          profile: userProfile
+        };
+      } else {
+        localAccounts.push({
+          email: emailStr,
+          password: '',
+          profile: userProfile
+        });
+      }
+      localStorage.setItem('local_accounts', JSON.stringify(localAccounts));
+
       if (firebaseUser) {
         try {
           const userDocRef = doc(db, 'users', uid);
-          const savePromise = setDoc(userDocRef, userProfile);
+          const savePromise = setDoc(userDocRef, {
+            ...userProfile,
+            lastLoginAt: serverTimestamp()
+          }, { merge: true });
+          
           const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Firestore connection timeout')), 1500)
+            setTimeout(() => reject(new Error('Firestore connection timeout')), 2500)
           );
           
           await Promise.race([savePromise, timeoutPromise]);
           
-          if (!firebaseUser.displayName) {
-            await updateProfile(firebaseUser, { displayName: fullName });
-          }
+          // Always update profile with display name and gender-allotted avatar photoURL
+          await updateProfile(firebaseUser, { 
+            displayName: fullName,
+            photoURL: photoUrl
+          });
         } catch (dbErr) {
           console.warn('Firestore database write failed or timed out in details setup:', dbErr);
+          try {
+            handleFirestoreError(dbErr, OperationType.WRITE, `users/${uid}`);
+          } catch (e) {}
         }
       }
       
@@ -538,6 +1068,7 @@ export const LoginScreen: React.FC = () => {
         age: ageNum,
         height: heightNum,
         weight: weightNum,
+        gender: gender,
         hasAcceptedTerms: accepted
       }));
       
@@ -641,6 +1172,40 @@ export const LoginScreen: React.FC = () => {
           <p className="text-textMuted text-sm">Smart Healthcare Dashboard</p>
         </div>
 
+        {isInIframe && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 p-4 rounded-2xl mb-6 text-xs space-y-2">
+            <p className="font-semibold flex items-center gap-1.5">
+              ⚠️ Browser Sandbox Detected (Iframe)
+            </p>
+            <p className="text-[11px] leading-relaxed">
+              Google Sign-In is restricted inside frames by browsers. 
+              Please click the link below to open PostureCare in a new tab for a fully functional live experience.
+            </p>
+            <a 
+              href={window.location.href} 
+              target="_blank" 
+              rel="noreferrer" 
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-amber-600 text-white rounded-xl font-bold text-[10px] hover:bg-amber-700 transition-colors uppercase tracking-wider"
+            >
+              Open in New Tab
+            </a>
+          </div>
+        )}
+
+        {isMockFirebase && (
+          <div className="bg-blue-50 border border-blue-200 text-blue-800 p-4 rounded-2xl mb-6 text-xs space-y-2">
+            <p className="font-semibold flex items-center gap-1.5 text-blue-900">
+              💡 Local Sandbox Mode Active
+            </p>
+            <p className="text-[11px] leading-relaxed text-blue-700">
+              PostureCare is running in an offline sandbox with a mock database. Google Sign-In is simulated with a virtual profile ("Google Explorer") to let you test the app immediately without blocked pop-ups.
+            </p>
+            <p className="text-[10px] text-blue-600/90 leading-relaxed italic">
+              * To connect a real database with live Google Sign-In, please approve the Firebase database provisioning prompt in your AI Studio chat!
+            </p>
+          </div>
+        )}
+
         {/* Dynamic Headers */}
         <div className="mb-6 text-center">
           {view === 'login' && (
@@ -656,6 +1221,12 @@ export const LoginScreen: React.FC = () => {
             <div className="space-y-1">
               <h2 className="text-lg font-bold text-indigo-600">Complete Your Profile</h2>
               <p className="text-xs text-textMuted">Please verify your details to finalize your orthopedic model.</p>
+            </div>
+          )}
+          {view === 'verification-pending' && (
+            <div className="space-y-1">
+              <h2 className="text-lg font-bold text-greenDark">Verify Your Email</h2>
+              <p className="text-xs text-textMuted">A verification link is on its way to your inbox.</p>
             </div>
           )}
         </div>
@@ -773,6 +1344,18 @@ export const LoginScreen: React.FC = () => {
         {/* Render View 2: EMAIL REGISTER */}
         {view === 'register' && (
           <form onSubmit={handleRegister} className="space-y-4">
+            {/* Live Avatar Preview */}
+            <div className="flex flex-col items-center justify-center py-1">
+              <div className="w-20 h-20 rounded-full border-4 border-slate-100 shadow-md p-0.5 bg-white overflow-hidden transition-transform duration-300 hover:scale-105">
+                <img 
+                  src={getAvatarUrl(fullName, gender)} 
+                  alt="Avatar Preview" 
+                  className="w-full h-full object-cover rounded-full"
+                />
+              </div>
+              <span className="text-[10px] text-slate-400 mt-1 uppercase tracking-widest font-bold">Dynamic Avatar</span>
+            </div>
+
             <div className="space-y-1">
               <label className="text-xs font-semibold text-textMuted ml-4">Full Name</label>
               <div className="relative">
@@ -785,6 +1368,32 @@ export const LoginScreen: React.FC = () => {
                   placeholder="e.g. Rahul Sharma"
                   required
                 />
+              </div>
+            </div>
+
+            {/* Gender Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-textMuted ml-4 block">Gender Specification</label>
+              <div className="grid grid-cols-3 gap-2 px-1">
+                {[
+                  { value: 'male', label: 'Male', icon: '👨' },
+                  { value: 'female', label: 'Female', icon: '👩' },
+                  { value: 'other', label: 'Other', icon: '👤' },
+                ].map((g) => (
+                  <button
+                    key={g.value}
+                    type="button"
+                    onClick={() => setGender(g.value as any)}
+                    className={`py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                      gender === g.value
+                        ? 'bg-green text-white border-green shadow-md shadow-green/10'
+                        : 'bg-white text-slate-700 border-border hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{g.icon}</span>
+                    <span>{g.label}</span>
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -907,10 +1516,51 @@ export const LoginScreen: React.FC = () => {
                   type="text"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  className="w-full bg-borderLight rounded-2xl py-3.5 pl-12 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-green/20 transition-shadow"
+                  className="w-full bg-borderLight rounded-2xl py-3.5 pl-12 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-shadow"
                   placeholder="Enter full name"
                   required
                 />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-textMuted ml-4">Email Address</label>
+              <div className="relative">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-textMuted w-5 h-5" />
+                <input
+                  type="email"
+                  value={regEmail}
+                  onChange={(e) => setRegEmail(e.target.value)}
+                  className="w-full bg-borderLight rounded-2xl py-3.5 pl-12 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-shadow"
+                  placeholder="name@domain.com"
+                  required
+                />
+              </div>
+            </div>
+
+            {/* Gender Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-textMuted ml-4 block">Gender Specification</label>
+              <div className="grid grid-cols-3 gap-2 px-1">
+                {[
+                  { value: 'male', label: 'Male', icon: '👨' },
+                  { value: 'female', label: 'Female', icon: '👩' },
+                  { value: 'other', label: 'Other', icon: '👤' },
+                ].map((g) => (
+                  <button
+                    key={g.value}
+                    type="button"
+                    onClick={() => setGender(g.value as any)}
+                    className={`py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                      gender === g.value
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/10'
+                        : 'bg-white text-slate-700 border-border hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{g.icon}</span>
+                    <span>{g.label}</span>
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -988,6 +1638,58 @@ export const LoginScreen: React.FC = () => {
               Cancel & Sign Out
             </button>
           </form>
+        )}
+
+        {/* Render View 4: EMAIL VERIFICATION PENDING */}
+        {view === 'verification-pending' && (
+          <div className="space-y-6 text-center">
+            <div className="flex justify-center">
+              <div className="w-16 h-16 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center justify-center text-greenDark">
+                <Mail size={32} />
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <p className="text-sm text-textMuted">
+                We have sent a verification email to <span className="font-semibold text-text">{regEmail || auth.currentUser?.email}</span>.
+              </p>
+              <p className="text-xs text-textMuted leading-relaxed bg-slate-50 p-3 rounded-xl border border-border">
+                Please click the link in that email to confirm your address, then click below to enter PostureCare.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={handleCheckVerification}
+                disabled={isLoading}
+                className="w-full bg-gradient-to-r from-green to-greenDark text-white py-4 rounded-2xl font-bold text-sm shadow-lg shadow-green/10 flex items-center justify-center gap-2 active:scale-[0.98] transition-all disabled:opacity-70"
+              >
+                {isLoading ? (
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  'I Have Verified My Email'
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleResendVerification}
+                disabled={isLoading}
+                className="w-full bg-white border border-border text-text py-3.5 rounded-2xl font-bold text-sm shadow-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-70"
+              >
+                Resend Verification Email
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCancelVerification}
+                className="w-full text-xs text-center text-textMuted hover:text-rose-500 font-semibold flex items-center justify-center gap-2 mt-2"
+              >
+                Cancel & Sign Out
+              </button>
+            </div>
+          </div>
         )}
 
         <div className="mt-8 flex items-center justify-center gap-2 text-textMuted border-t border-border pt-6">

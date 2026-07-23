@@ -310,6 +310,23 @@ export const SlouchAlarmManager: React.FC = () => {
     setSnoozeUntil(Date.now() + thresholds.snoozeDuration * 1000);
   };
 
+  // Auto-snooze safety fail-safe: automatically snooze after 60 seconds (1 minute) of continuous alarm overlay sounding
+  useEffect(() => {
+    let interval: any;
+    if (showOverlayAlarm) {
+      const startTime = Date.now();
+      interval = setInterval(() => {
+        const elapsed = (Date.now() - startTime) / 1000;
+        if (elapsed >= 60) {
+          handleSnooze();
+        }
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [showOverlayAlarm]);
+
   // Command Action: Stop Alarm (Pause monitoring alerts for stopDuration)
   const handleStop = () => {
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {

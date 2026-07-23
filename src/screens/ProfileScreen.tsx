@@ -6,17 +6,50 @@ import { User, LogOut, Shield, Settings, ChevronRight, Camera, Trophy, Star, Act
 import { cn } from '../lib/utils';
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { useNavigate } from 'react-router-dom';
-import { auth } from '../lib/firebase';
-import { signOut } from 'firebase/auth';
+import { auth, db, rtdb } from '../lib/firebase';
+import { signOut, deleteUser } from 'firebase/auth';
+import { doc, deleteDoc, collection, getDocs } from 'firebase/firestore';
+import { ref as rtdbRef, remove as rtdbRemove } from 'firebase/database';
 import { LocalModelService } from '../services/localModelService';
 
 const AVATAR_OPTIONS = [
+  // Original restored classics
   'https://api.dicebear.com/7.x/avataaars/svg?seed=Rahul',
   'https://api.dicebear.com/7.x/avataaars/svg?seed=Anya',
   'https://api.dicebear.com/7.x/avataaars/svg?seed=Max',
   'https://api.dicebear.com/7.x/avataaars/svg?seed=Luna',
   'https://api.dicebear.com/7.x/avataaars/svg?seed=Zoe',
   'https://api.dicebear.com/7.x/avataaars/svg?seed=Leo',
+  
+  // Cute & Happy Characters
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=JoyfulLily&eyes=happy&mouth=smile&top=longHair&clothing=hoodie&clothingColor=ff5c5c', // Cute Joyful Lily
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=SunnyWink&eyes=wink&mouth=twinkle&top=shortHair&clothing=graphicShirt&clothingColor=3c3c3c', // Cheerful Winking Sunny
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=StarGirl&eyes=hearts&mouth=smile&top=curvy&clothing=overall', // Starstruck Star
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Bella&eyes=happy&mouth=twinkle&top=bob', // Sweet Bella
+
+  // Angry & Determined Characters
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=FocusedGamer&eyebrows=angry&eyes=squint&mouth=grimace&top=dreads&accessories=round&clothing=hoodie', // Intense Focused Gamer
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=FierceFiona&eyebrows=angryNatural&eyes=default&mouth=serious&top=bob&clothing=blazerAndShirt', // Determined Fiona
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=GrumpyGary&eyebrows=angry&eyes=default&mouth=sad&top=shortHair', // Grumpy Gary
+
+  // Sad & Pensive Characters
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=SadMax&eyebrows=sadConcerned&eyes=cry&mouth=sad&top=curly&clothing=shirtVNeck', // Emotional Sad Max
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=PensivePeter&eyebrows=sadConcernedNatural&eyes=side&mouth=concerned&top=shaggy&clothing=collarAndSweater', // Pensive Peter
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=MelancholyMia&eyebrows=sadConcerned&eyes=side&mouth=disbelief&top=longHair', // Melancholy Mia
+
+  // Cool, Techie & Scholarly Characters
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=CyberCool&accessories=sunglasses&top=sides&clothing=blazerAndShirt', // Cool Techie
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=GeekyGrace&accessories=prescription02&top=frida&clothing=collarAndSweater', // Smart Geeky Grace
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=CodingCody&accessories=prescription01&top=shaggyMullet&clothing=hoodie', // Coding Cody
+
+  // Surprised & Shocked Characters
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=AstonishedSam&eyebrows=raisedExcited&eyes=surprised&mouth=concerned&top=frizzle', // Surprised Sam
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=KaiScream&eyebrows=upDown&eyes=surprised&mouth=screamOpen&top=shortHair', // Screaming Kai
+
+  // Playful & Peaceful Characters
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=PlayfulFelix&eyes=winkWacky&mouth=tongue&top=shortHair&accessories=wayfarers', // Wacky Felix
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=ZenMimi&eyes=close&mouth=eating&top=bob&clothing=shirtVNeck', // Calm Zen Mimi
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=DreamingDiana&eyes=close&mouth=smile&top=bun' // Peaceful Diana
 ];
 
 export const ProfileScreen: React.FC = () => {
@@ -87,14 +120,128 @@ export const ProfileScreen: React.FC = () => {
   const [age, setAge] = useState(user?.age ? String(user.age) : '');
   const [height, setHeight] = useState(user?.height ? String(user.height) : '');
   const [weight, setWeight] = useState(user?.weight ? String(user.weight) : '');
+  const [gender, setGender] = useState<'male' | 'female' | 'other' | ''>(user?.gender || '');
 
   const handleLogout = async () => {
     try {
+      LocalModelService.clearCache();
       await signOut(auth);
       dispatch(logout());
       navigate('/login');
     } catch (error) {
       console.error('Logout error:', error);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    const confirmed = window.confirm(
+      "WARNING: Are you sure you want to delete your account? This action is irreversible and will permanently delete ALL your biometric data, posture history, and clinical settings from the database."
+    );
+    if (!confirmed) return;
+
+    try {
+      const currentUser = auth.currentUser;
+      if (currentUser) {
+        const uid = currentUser.uid;
+
+        // 1. Delete all Firestore sessions subcollection docs
+        try {
+          const sessionsRef = collection(db, 'users', uid, 'sessions');
+          const querySnapshot = await getDocs(sessionsRef);
+          for (const sessionDoc of querySnapshot.docs) {
+            await deleteDoc(doc(db, 'users', uid, 'sessions', sessionDoc.id));
+          }
+          console.log('Successfully deleted Firestore sessions subcollection');
+        } catch (err) {
+          console.error('Error deleting Firestore sessions:', err);
+        }
+
+        // 1b. Delete all Firestore appointments subcollection docs
+        try {
+          const appointmentsRef = collection(db, 'users', uid, 'appointments');
+          const appSnapshot = await getDocs(appointmentsRef);
+          for (const appDoc of appSnapshot.docs) {
+            await deleteDoc(doc(db, 'users', uid, 'appointments', appDoc.id));
+          }
+          console.log('Successfully deleted Firestore appointments subcollection');
+        } catch (err) {
+          console.error('Error deleting Firestore appointments:', err);
+        }
+
+        // 2. Delete the main Firestore user document
+        try {
+          await deleteDoc(doc(db, 'users', uid));
+          console.log('Successfully deleted Firestore main user document');
+        } catch (err) {
+          console.error('Error deleting Firestore user document:', err);
+        }
+
+        // 3. Delete Realtime Database device references
+        try {
+          const deviceRef = rtdbRef(rtdb, `devices/${uid}`);
+          await rtdbRemove(deviceRef);
+          console.log('Successfully deleted Realtime Database device references');
+        } catch (err) {
+          console.error('Error deleting Realtime Database references:', err);
+        }
+
+        // 4. Delete the on-device local database (IndexedDB)
+        try {
+          const dbName = `PostureCareEdgeDB_${uid}`;
+          if (window.indexedDB) {
+            window.indexedDB.deleteDatabase(dbName);
+          }
+          console.log('Successfully deleted IndexedDB database');
+        } catch (err) {
+          console.error('Error deleting IndexedDB database:', err);
+        }
+
+        // 5. Delete specific user-related local storage records
+        try {
+          const keysToDelete: string[] = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (
+              key.includes(uid) || 
+              key.startsWith('terms_accepted') || 
+              key.startsWith('privacy_accepted') || 
+              key.startsWith('user_profile') || 
+              key.startsWith('posture_sessions') ||
+              key.includes('posturecare_')
+            )) {
+              keysToDelete.push(key);
+            }
+          }
+          keysToDelete.forEach(k => localStorage.removeItem(k));
+          console.log('Successfully cleared local storage records');
+        } catch (err) {
+          console.error('Error clearing local storage keys:', err);
+        }
+
+        // 6. Delete the actual Firebase Authentication account
+        await deleteUser(currentUser);
+        console.log('Successfully deleted Firebase Authentication user account');
+      }
+
+      // Purge generic local storage references
+      localStorage.removeItem('login_mode');
+      localStorage.removeItem('local_user_profile');
+      localStorage.removeItem('local_accounts');
+      localStorage.removeItem('current_user_id');
+      localStorage.removeItem('persist:root');
+
+      LocalModelService.clearCache();
+
+      dispatch(logout());
+      navigate('/login');
+      alert("Your account and all associated database records have been successfully deleted.");
+    } catch (error: any) {
+      console.error('Error during account deletion:', error);
+      if (error?.code === 'auth/requires-recent-login') {
+        alert("For security reasons, deleting your account requires a recent login. Please sign out and sign in again before attempting deletion.");
+      } else {
+        alert(`An error occurred while deleting your account: ${error?.message || error}`);
+      }
     }
   };
 
@@ -134,7 +281,8 @@ export const ProfileScreen: React.FC = () => {
     const payload = {
       age: ageNum,
       height: heightNum,
-      weight: weightNum
+      weight: weightNum,
+      gender: gender
     };
 
     dispatch(updateUser(payload));
@@ -232,34 +380,39 @@ export const ProfileScreen: React.FC = () => {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowAvatarPicker(false)}
-              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100]"
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999]"
             />
             <motion.div 
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.95, opacity: 0, y: 10 }}
-              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white rounded-[40px] p-8 z-[101] shadow-2xl"
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[92%] max-w-sm bg-white rounded-[40px] p-6 md:p-8 z-[1000] shadow-2xl max-h-[85vh] flex flex-col"
             >
-              <h3 className="text-xl font-black text-slate-800 mb-6 text-center tracking-tight">Choose Avatar</h3>
-              <div className="grid grid-cols-3 gap-4">
-                {AVATAR_OPTIONS.map((url, i) => (
-                  <motion.button
-                    key={i}
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => handleSelectAvatar(url)}
-                    className={cn(
-                      "aspect-square rounded-2xl overflow-hidden border-4 transition-colors",
-                      user?.photo === url ? "border-indigo-500" : "border-slate-50"
-                    )}
-                  >
-                    <img src={url} alt={`Avatar ${i}`} className="w-full h-full object-cover" />
-                  </motion.button>
-                ))}
+              <h3 className="text-xl font-black text-slate-800 mb-4 text-center tracking-tight">Choose Avatar</h3>
+              
+              {/* Scrollable grid container to fit perfectly on all screens */}
+              <div className="overflow-y-auto pr-1 flex-1 min-h-0 scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
+                <div className="grid grid-cols-3 gap-4 p-1">
+                  {AVATAR_OPTIONS.map((url, i) => (
+                    <motion.button
+                      key={i}
+                      whileHover={{ scale: 1.08 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => handleSelectAvatar(url)}
+                      className={cn(
+                        "aspect-square rounded-2xl overflow-hidden border-4 transition-colors relative bg-slate-50",
+                        user?.photo === url ? "border-indigo-500 shadow-md shadow-indigo-100" : "border-transparent hover:border-slate-100"
+                      )}
+                    >
+                      <img src={url} alt={`Avatar ${i}`} className="w-full h-full object-cover" />
+                    </motion.button>
+                  ))}
+                </div>
               </div>
+
               <button 
                 onClick={() => setShowAvatarPicker(false)}
-                className="w-full mt-8 py-4 bg-slate-100 rounded-2xl text-slate-500 font-bold hover:bg-slate-200 transition-colors"
+                className="w-full mt-6 py-3.5 bg-slate-100 rounded-2xl text-slate-500 font-bold hover:bg-slate-200 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -354,6 +507,31 @@ export const ProfileScreen: React.FC = () => {
                 </div>
               </div>
 
+              {/* Gender selection in editing mode */}
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-wider block ml-1">Gender Specification</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { value: 'male', label: 'Male' },
+                    { value: 'female', label: 'Female' },
+                    { value: 'other', label: 'Other' }
+                  ].map((g) => (
+                    <button
+                      key={g.value}
+                      type="button"
+                      onClick={() => setGender(g.value as any)}
+                      className={`py-2 rounded-xl text-xs font-bold border transition-colors ${
+                        gender === g.value
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/10'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {g.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="flex gap-2 pt-2">
                 <button 
                   onClick={() => setIsEditingBiometrics(false)}
@@ -371,23 +549,29 @@ export const ProfileScreen: React.FC = () => {
             </div>
           ) : (
             <div className="space-y-5">
-              <div className="grid grid-cols-3 gap-4">
-                <div className="flex flex-col items-center p-3 bg-slate-50/50 rounded-2xl border border-slate-100/30">
-                  <Calendar className="text-indigo-500 mb-1" size={18} />
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Age</span>
-                  <span className="text-sm font-black text-slate-800 mt-0.5">{user?.age ? `${user.age} yrs` : 'Not Set'}</span>
+              <div className="grid grid-cols-4 gap-2">
+                <div className="flex flex-col items-center p-2.5 bg-slate-50/50 rounded-2xl border border-slate-100/30">
+                  <Calendar className="text-indigo-500 mb-1" size={16} />
+                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Age</span>
+                  <span className="text-xs font-black text-slate-800 mt-0.5 whitespace-nowrap">{user?.age ? `${user.age} yrs` : 'Not Set'}</span>
                 </div>
 
-                <div className="flex flex-col items-center p-3 bg-slate-50/50 rounded-2xl border border-slate-100/30">
-                  <Ruler className="text-indigo-500 mb-1" size={18} />
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Height</span>
-                  <span className="text-sm font-black text-slate-800 mt-0.5">{user?.height ? `${user.height} cm` : 'Not Set'}</span>
+                <div className="flex flex-col items-center p-2.5 bg-slate-50/50 rounded-2xl border border-slate-100/30">
+                  <Ruler className="text-indigo-500 mb-1" size={16} />
+                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Height</span>
+                  <span className="text-xs font-black text-slate-800 mt-0.5 whitespace-nowrap">{user?.height ? `${user.height} cm` : 'Not Set'}</span>
                 </div>
 
-                <div className="flex flex-col items-center p-3 bg-slate-50/50 rounded-2xl border border-slate-100/30">
-                  <Scale className="text-indigo-500 mb-1" size={18} />
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Weight</span>
-                  <span className="text-sm font-black text-slate-800 mt-0.5">{user?.weight ? `${user.weight} kg` : 'Not Set'}</span>
+                <div className="flex flex-col items-center p-2.5 bg-slate-50/50 rounded-2xl border border-slate-100/30">
+                  <Scale className="text-indigo-500 mb-1" size={16} />
+                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Weight</span>
+                  <span className="text-xs font-black text-slate-800 mt-0.5 whitespace-nowrap">{user?.weight ? `${user.weight} kg` : 'Not Set'}</span>
+                </div>
+
+                <div className="flex flex-col items-center p-2.5 bg-slate-50/50 rounded-2xl border border-slate-100/30">
+                  <User className="text-indigo-500 mb-1" size={16} />
+                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Gender</span>
+                  <span className="text-xs font-black text-slate-800 mt-0.5 capitalize whitespace-nowrap">{user?.gender || 'Not Set'}</span>
                 </div>
               </div>
 
@@ -453,7 +637,7 @@ export const ProfileScreen: React.FC = () => {
           </button>
           
           <button 
-            onClick={() => confirm("WARNING: Are you sure you want to delete your account? This action is irreversible.")}
+            onClick={handleDeleteAccount}
             className="w-full p-6 rounded-[32px] flex items-center gap-5 hover:bg-rose-50 transition-colors border border-rose-100/50"
           >
              <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-500 flex items-center justify-center">

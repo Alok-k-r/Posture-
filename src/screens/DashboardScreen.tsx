@@ -26,13 +26,15 @@ import {
   Calendar,
   Info,
   ArrowUpRight,
-  X
+  X,
+  Database
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { analyzePosture } from '../services/geminiService';
 import { sendLocalNotification } from '../services/notificationService';
 import { useNavigate } from 'react-router-dom';
 import { LocalModelService } from '../services/localModelService';
+import { SessionService, UnifiedSession } from '../services/sessionService';
+import { auth } from '../lib/firebase';
 
 export const DashboardScreen: React.FC = () => {
   const dispatch = useDispatch();
@@ -44,9 +46,60 @@ export const DashboardScreen: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'realtime' | 'health-index'>('realtime');
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
+  const [sessions, setSessions] = useState<UnifiedSession[]>([]);
+  const [isSeeding, setIsSeeding] = useState(false);
 
-  // Fetch metrics from our local AI biomechanical engine
-  const m = LocalModelService.getMetrics();
+  // Subscribe to real-time session database updates across Firestore and LocalStorage
+  useEffect(() => {
+    const userId = user?.id || auth.currentUser?.uid || 'guest';
+    const unsubscribe = SessionService.subscribeToSessions(userId, (fetched) => {
+      setSessions(fetched);
+    });
+    return () => unsubscribe();
+  }, [user?.id, auth.currentUser?.uid]);
+
+  // Aggregate Today's Completed Sessions + Live Active Session
+  const todayStr = new Date().toDateString();
+  const todayCompletedSessions = sessions.filter(s => {
+    if (!s.date) return false;
+    return new Date(s.date).toDateString() === todayStr;
+  });
+
+  const activeDuration = posture.isRecordingSession ? posture.totalSessionSeconds || 0 : 0;
+  const activeGood = posture.isRecordingSession ? posture.goodSessionSeconds || 0 : 0;
+  const activeIncidents = posture.isRecordingSession ? posture.incidents || 0 : 0;
+
+  const completedTodayGoodSecs = todayCompletedSessions.reduce((acc, s) => acc + (s.goodSessionSeconds || 0), 0);
+  const completedTodayTotalSecs = todayCompletedSessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+  const completedTodayIncidents = todayCompletedSessions.reduce((acc, s) => acc + (s.slouches || 0), 0);
+  const completedTodayMaxFocus = todayCompletedSessions.reduce((max, s) => Math.max(max, s.maxFocusStreak || 0), 0);
+
+  const combinedTodayGoodSecs = completedTodayGoodSecs + activeGood;
+  const combinedTodayTotalSecs = completedTodayTotalSecs + activeDuration;
+  const totalTodayIncidents = completedTodayIncidents + activeIncidents;
+  const combinedTodayFocusMax = Math.max(completedTodayMaxFocus, posture.maxFocusDuration || 0);
+
+  // Integrity Score for Today: Weighted average across all completed sessions today + active session if running
+  let totalTodayWeightedScore = todayCompletedSessions.reduce((acc, s) => acc + ((s.score || 0) * (s.duration || 0)), 0);
+  if (posture.isRecordingSession && activeDuration > 0) {
+    totalTodayWeightedScore += (posture.score * activeDuration);
+  }
+
+  const combinedTodayIntegrity = combinedTodayTotalSecs > 0
+    ? Math.round(totalTodayWeightedScore / combinedTodayTotalSecs)
+    : (todayCompletedSessions.length > 0 ? todayCompletedSessions[0].score : (posture.isRecordingSession ? posture.score : 100));
+
+  // Fetch metrics from local AI biomechanical engine incorporating combined today stats
+  const m = LocalModelService.recalculateAllBiomechanicalMetrics(
+    posture.angle,
+    posture.baselineAngle,
+    posture.history,
+    combinedTodayGoodSecs,
+    combinedTodayTotalSecs,
+    totalTodayIncidents,
+    user ? { age: user.age, height: user.height, weight: user.weight } : undefined
+  );
+
   const statusInfo = m.dailyUpperBackHealthScore >= 80 ? {
     label: 'Perfect',
     color: 'bg-emerald-500',
@@ -70,8 +123,6 @@ export const DashboardScreen: React.FC = () => {
     emoji: '🔴'
   };
 
-  const hasData = totalSessionSeconds > 0 || posture.history.length > 0;
-
   const formatSecs = (sec: number) => {
     if (!sec || sec === 0) return '0s';
     const mins = Math.floor(sec / 60);
@@ -80,50 +131,90 @@ export const DashboardScreen: React.FC = () => {
     return `${mins}m ${secs}s`;
   };
 
-  // 28-day Consistency Calendar logic
+  // Construct Today's Achievements sentence from today's aggregated sessions
+  const todayTotalMins = Math.floor(combinedTodayGoodSecs / 60);
+  const todayTotalHours = Math.floor(todayTotalMins / 60);
+  const todayRemMins = todayTotalMins % 60;
+  const todaySessionsCount = todayCompletedSessions.length + (posture.isRecordingSession ? 1 : 0);
+
+  const todaysAchievementText = combinedTodayTotalSecs > 0
+    ? `You maintained excellent posture for ${todayTotalHours > 0 ? `${todayTotalHours}h ` : ''}${todayRemMins}m across ${todaySessionsCount} session(s) completed today.`
+    : "Complete a sitting session to unlock today's posture achievements.";
+
+  // 28-day Consistency Calendar logic pulling directly from unified Firestore & local sessions
+  const isDemo = localStorage.getItem('login_mode') === 'demo';
   const consistencyDays = Array.from({ length: 28 }, (_, i) => {
     const date = new Date();
     date.setDate(date.getDate() - (27 - i));
+    const dateKey = date.toDateString();
     
-    let scoreVal = 80;
-    let type: 'excellent' | 'good' | 'average' | 'poor' | 'missed' = 'good';
-    
+    // Match sessions for this calendar day
+    const dayMatchedSessions = sessions.filter(s => {
+      if (!s.date) return false;
+      return new Date(s.date).toDateString() === dateKey;
+    });
+
+    let dayScore = 0;
+    let type: 'excellent' | 'good' | 'average' | 'poor' | 'missed' = 'missed';
+
     if (i === 27) {
-      scoreVal = hasData ? posture.score : 0;
-    } else if (i === 26) {
-      scoreVal = hasData ? 78 : 0;
-    } else if (i % 7 === 0) {
-      type = 'missed';
-      scoreVal = 0;
-    } else if (i % 9 === 0) {
-      type = 'poor';
-      scoreVal = 48;
-    } else if (i % 5 === 0) {
-      type = 'average';
-      scoreVal = 68;
-    } else if (i % 3 === 0) {
-      type = 'excellent';
-      scoreVal = 92;
+      // Today: combine today's sessions or live recording
+      if (combinedTodayTotalSecs > 0 || dayMatchedSessions.length > 0) {
+        dayScore = combinedTodayIntegrity;
+      } else if (isDemo) {
+        dayScore = 80;
+      } else {
+        dayScore = 0;
+      }
     } else {
-      type = 'good';
-      scoreVal = 82;
+      // Past days: calculate average quality score for sessions on this day
+      if (dayMatchedSessions.length > 0) {
+        const dayTotalDur = dayMatchedSessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+        if (dayTotalDur > 0) {
+          dayScore = Math.round(dayMatchedSessions.reduce((acc, s) => acc + ((s.score || 0) * (s.duration || 0)), 0) / dayTotalDur);
+        } else {
+          dayScore = Math.round(dayMatchedSessions.reduce((acc, s) => acc + (s.score || 0), 0) / dayMatchedSessions.length);
+        }
+      } else if (isDemo) {
+        if (i % 7 === 0) dayScore = 0;
+        else if (i % 9 === 0) dayScore = 48;
+        else if (i % 5 === 0) dayScore = 68;
+        else if (i % 3 === 0) dayScore = 92;
+        else dayScore = 82;
+      } else {
+        dayScore = 0;
+      }
     }
 
-    if (type !== 'missed') {
-      if (scoreVal >= thresholds.good) type = 'excellent';
-      else if (scoreVal >= thresholds.warn) type = 'good';
-      else if (scoreVal > 45) type = 'average';
-      else if (scoreVal > 0) type = 'poor';
-      else type = 'missed';
-    }
-    
+    if (dayScore >= thresholds.good) type = 'excellent';
+    else if (dayScore >= thresholds.warn) type = 'good';
+    else if (dayScore > 45) type = 'average';
+    else if (dayScore > 0) type = 'poor';
+    else type = 'missed';
+
     return {
       dayNum: date.getDate(),
       dateStr: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      score: scoreVal,
+      score: dayScore,
+      sessionsCount: dayMatchedSessions.length,
       type
     };
   });
+
+  const handleSeedDummyData = async () => {
+    setIsSeeding(true);
+    try {
+      const userId = user?.id || auth.currentUser?.uid || 'guest';
+      const newSessions = await SessionService.seedDummyData(userId);
+      setSessions(newSessions);
+      alert('✅ Test multi-day sessions successfully sent to Firestore database & loaded on Dashboard!');
+    } catch (err: any) {
+      console.error('Error seeding dummy data:', err);
+      alert('Failed seeding dummy data: ' + err.message);
+    } finally {
+      setIsSeeding(false);
+    }
+  };
 
   return (
     <div className="p-6 space-y-8 pb-32 relative z-10 max-w-4xl mx-auto">
@@ -166,12 +257,22 @@ export const DashboardScreen: React.FC = () => {
               </button>
             </div>
 
-            <button 
-              onClick={() => sendLocalNotification('System Check', { body: 'Notification system is fully functional' })}
-              className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[8px] font-black uppercase tracking-[0.15em] border border-slate-200 hover:bg-slate-200 transition-colors"
-            >
-              <Bell size={8} /> Test Alert
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button 
+                onClick={handleSeedDummyData}
+                disabled={isSeeding}
+                className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-[8px] font-black uppercase tracking-[0.15em] border border-indigo-200 hover:bg-indigo-100 transition-colors disabled:opacity-50"
+              >
+                <Database size={8} /> {isSeeding ? 'Syncing...' : 'Sync Test Data'}
+              </button>
+
+              <button 
+                onClick={() => sendLocalNotification('System Check', { body: 'Notification system is fully functional' })}
+                className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[8px] font-black uppercase tracking-[0.15em] border border-slate-200 hover:bg-slate-200 transition-colors"
+              >
+                <Bell size={8} /> Test Alert
+              </button>
+            </div>
           </div>
           <button 
             onClick={() => navigate('/profile')}
@@ -284,9 +385,9 @@ export const DashboardScreen: React.FC = () => {
             <div className="flex items-end justify-between relative z-10">
               <div className="space-y-1">
                 <h4 className={cn("text-4xl font-black tracking-tighter leading-none px-1", statusInfo.text)}>
-                   {Math.round(posture.score)}%
+                   {combinedTodayIntegrity}%
                 </h4>
-                <p className={cn("text-[9px] font-black uppercase tracking-[0.2em] opacity-40 leading-none", statusInfo.text)}>Integrity Score</p>
+                <p className={cn("text-[9px] font-black uppercase tracking-[0.2em] opacity-40 leading-none", statusInfo.text)}>Today's Overall Integrity</p>
               </div>
               <motion.button 
                 whileHover={{ scale: 1.05 }}
@@ -429,7 +530,7 @@ export const DashboardScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Bento Stats Grid */}
+      {/* Bento Stats Grid - Aggregated for Today */}
       <div className="grid grid-cols-2 gap-4">
         {/* Streak Card - Wide */}
         <div className="col-span-2 bg-gradient-to-br from-indigo-600 to-violet-700 p-6 rounded-[40px] text-white shadow-premium relative overflow-hidden flex justify-between items-center group cursor-pointer active:scale-[0.98] transition-all">
@@ -455,8 +556,8 @@ export const DashboardScreen: React.FC = () => {
               <Shield size={20} fill="currentColor" />
            </div>
            <div>
-              <div className="text-2xl font-black text-bento-green-text">{Math.round(posture.score)}%</div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-bento-green-text/60">Integrity</p>
+              <div className="text-2xl font-black text-bento-green-text">{combinedTodayIntegrity}%</div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-bento-green-text/60">Integrity Today</p>
            </div>
         </div>
 
@@ -466,8 +567,8 @@ export const DashboardScreen: React.FC = () => {
               <AlertCircle size={20} fill="currentColor" />
            </div>
            <div>
-              <div className="text-2xl font-black text-bento-rose-text">{posture.incidents}</div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-bento-rose-text/60">Incidents</p>
+              <div className="text-2xl font-black text-bento-rose-text">{totalTodayIncidents}</div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-bento-rose-text/60">Incidents Today</p>
            </div>
         </div>
 
@@ -478,9 +579,9 @@ export const DashboardScreen: React.FC = () => {
            </div>
            <div>
               <div className="text-2xl font-black text-bento-violet-text">
-                {formatSecs(posture.maxFocusDuration)}
+                {formatSecs(combinedTodayFocusMax)}
               </div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-bento-violet-text/60">Focus Max</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-bento-violet-text/60">Today's Focus Max</p>
            </div>
         </div>
 
@@ -509,13 +610,13 @@ export const DashboardScreen: React.FC = () => {
           </div>
           <div>
             <h4 className="text-sm font-black text-slate-800">Today's Achievements</h4>
-            <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Aesthetic Posture Milestones</p>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Daily Posture Milestones</p>
           </div>
         </div>
 
         <div className="p-4 bg-white/60 border border-indigo-100/50 rounded-3xl">
           <p className="text-sm font-black text-slate-800 leading-relaxed text-center">
-            "{m.todaysAchievement}"
+            "{todaysAchievementText}"
           </p>
         </div>
 
@@ -546,7 +647,7 @@ export const DashboardScreen: React.FC = () => {
         <div className="flex justify-between items-center">
           <div>
             <h4 className="text-sm font-black text-slate-800">Consistency Calendar</h4>
-            <p className="text-[10px] font-bold text-slate-400">Visual index of daily alignment performance across the last 4 weeks</p>
+            <p className="text-[10px] font-bold text-slate-400">Visual index of daily alignment performance from database across the last 4 weeks</p>
           </div>
           <Calendar className="w-5 h-5 text-slate-400" />
         </div>
@@ -567,7 +668,7 @@ export const DashboardScreen: React.FC = () => {
                     "aspect-square w-full rounded-md flex items-center justify-center text-[9px] font-black cursor-pointer hover:scale-110 active:scale-95 transition-all",
                     colorClass
                   )}
-                  title={`${day.dateStr}: ${day.score > 0 ? `${day.score}% Score` : 'No sitting tracked'}`}
+                  title={`${day.dateStr}: ${day.score > 0 ? `${day.score}% Score (${day.sessionsCount} session(s))` : 'No sitting tracked'}`}
                 >
                   {day.dayNum}
                 </div>
@@ -595,8 +696,6 @@ export const DashboardScreen: React.FC = () => {
           </div>
         </div>
       </div>
-
-
 
       {/* Local AI Synthesis Diagnostic Summary Modal */}
       <AnimatePresence>

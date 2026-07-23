@@ -186,6 +186,12 @@ export class LocalModelService {
   private static isDbLoading: boolean = false;
   private static lastTrainedMinute: number = -1;
 
+  public static clearCache(): void {
+    this.cachedMetadata = null;
+    this.isDbLoading = false;
+    this.lastTrainedMinute = -1;
+  }
+
   /**
    * Real-Time Continuous In-Session Online Micro-Learning (Trained Every Minute)
    * Adapts the active user posture model live based on the current session's behavior.
@@ -239,6 +245,18 @@ export class LocalModelService {
   }
 
   private static STORAGE_KEY_METRICS = "posturecare_local_ai_metrics";
+
+  private static getCurrentUserId(): string {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return localStorage.getItem('current_user_id') || 'guest';
+    }
+    return 'guest';
+  }
+
+  private static getLocalStorageKey(baseKey: string): string {
+    const userId = this.getCurrentUserId();
+    return `${baseKey}_${userId}`;
+  }
 
   /**
    * Triggers lazy async loading of personal model from IndexedDB
@@ -314,10 +332,11 @@ export class LocalModelService {
     }).catch(() => {
       // Fallback
       try {
-        const raw = localStorage.getItem("posturecare_corrections_log_v2") || "[]";
+        const key = this.getLocalStorageKey("posturecare_corrections_log_v2");
+        const raw = localStorage.getItem(key) || "[]";
         const parsed = JSON.parse(raw);
         const updated = [newEvent, ...parsed].slice(0, 100);
-        localStorage.setItem("posturecare_corrections_log_v2", JSON.stringify(updated));
+        localStorage.setItem(key, JSON.stringify(updated));
       } catch (e) {
         console.error(e);
       }
@@ -341,14 +360,15 @@ export class LocalModelService {
     }).catch(() => {
       // Fallback
       try {
-        const raw = localStorage.getItem("posturecare_corrections_log_v2") || "[]";
+        const key = this.getLocalStorageKey("posturecare_corrections_log_v2");
+        const raw = localStorage.getItem(key) || "[]";
         const parsed = JSON.parse(raw);
         if (parsed.length > 0) {
           const index = parsed.findIndex((l: any) => !l.corrected && l.responseTimeSeconds === -1);
           const idx = index !== -1 ? index : 0;
           parsed[idx].corrected = true;
           parsed[idx].responseTimeSeconds = Math.max(1, Math.round(responseTimeSeconds));
-          localStorage.setItem("posturecare_corrections_log_v2", JSON.stringify(parsed));
+          localStorage.setItem(key, JSON.stringify(parsed));
         }
       } catch (e) {
         console.error(e);
@@ -357,23 +377,28 @@ export class LocalModelService {
   }
 
   public static getCorrectionsLog(): CorrectionEvent[] {
-    // Return mock fallback immediately in case caller expects sync results,
-    // but actual calculations inside recalculateAllBiomechanicalMetrics use IndexedDB values resolved via cache.
     try {
-      const saved = localStorage.getItem("posturecare_corrections_log_v2");
+      const key = this.getLocalStorageKey("posturecare_corrections_log_v2");
+      const saved = localStorage.getItem(key);
       if (saved) return JSON.parse(saved);
     } catch {}
 
-    const seeded = [
-      { timestamp: new Date(Date.now() - 4 * 3600000).toISOString(), responseTimeSeconds: 4.5, corrected: true },
-      { timestamp: new Date(Date.now() - 10 * 3600000).toISOString(), responseTimeSeconds: 7.2, corrected: true },
-      { timestamp: new Date(Date.now() - 24 * 3600000).toISOString(), responseTimeSeconds: 3.1, corrected: true },
-      { timestamp: new Date(Date.now() - 36 * 3600000).toISOString(), responseTimeSeconds: 5.8, corrected: true },
-    ];
-    try {
-      localStorage.setItem("posturecare_corrections_log_v2", JSON.stringify(seeded));
-    } catch {}
-    return seeded;
+    const isDemo = localStorage.getItem('login_mode') === 'demo';
+    if (isDemo) {
+      const seeded = [
+        { timestamp: new Date(Date.now() - 4 * 3600000).toISOString(), responseTimeSeconds: 4.5, corrected: true },
+        { timestamp: new Date(Date.now() - 10 * 3600000).toISOString(), responseTimeSeconds: 7.2, corrected: true },
+        { timestamp: new Date(Date.now() - 24 * 3600000).toISOString(), responseTimeSeconds: 3.1, corrected: true },
+        { timestamp: new Date(Date.now() - 36 * 3600000).toISOString(), responseTimeSeconds: 5.8, corrected: true },
+      ];
+      try {
+        const key = this.getLocalStorageKey("posturecare_corrections_log_v2");
+        localStorage.setItem(key, JSON.stringify(seeded));
+      } catch {}
+      return seeded;
+    }
+
+    return [];
   }
 
   public static logSlouchTimePattern(): void {
@@ -392,13 +417,14 @@ export class LocalModelService {
     }).catch(() => {
       // Local fallback
       try {
-        const raw = localStorage.getItem("posturecare_historical_hourly_logs") || "{}";
+        const key = this.getLocalStorageKey("posturecare_historical_hourly_logs");
+        const raw = localStorage.getItem(key) || "{}";
         const parsed = JSON.parse(raw);
         if (currentHour >= 8 && currentHour < 12) parsed.morningSlouches = (parsed.morningSlouches || 0) + 1;
         else if (currentHour >= 12 && currentHour < 17) parsed.afternoonSlouches = (parsed.afternoonSlouches || 0) + 1;
         else if (currentHour >= 17 && currentHour < 22) parsed.eveningSlouches = (parsed.eveningSlouches || 0) + 1;
         else parsed.nightSlouches = (parsed.nightSlouches || 0) + 1;
-        localStorage.setItem("posturecare_historical_hourly_logs", JSON.stringify(parsed));
+        localStorage.setItem(key, JSON.stringify(parsed));
       } catch (e) {
         console.error(e);
       }
@@ -407,14 +433,26 @@ export class LocalModelService {
 
   public static getSlouchTimePatterns(): PostureTimeOfDayPatterns {
     try {
-      const saved = localStorage.getItem("posturecare_historical_hourly_logs");
+      const key = this.getLocalStorageKey("posturecare_historical_hourly_logs");
+      const saved = localStorage.getItem(key);
       if (saved) return JSON.parse(saved);
     } catch {}
+
+    const isDemo = localStorage.getItem('login_mode') === 'demo';
+    if (isDemo) {
+      return {
+        morningSlouches: 4,
+        afternoonSlouches: 12,
+        eveningSlouches: 8,
+        nightSlouches: 2,
+      };
+    }
+
     return {
-      morningSlouches: 4,
-      afternoonSlouches: 12,
-      eveningSlouches: 8,
-      nightSlouches: 2,
+      morningSlouches: 0,
+      afternoonSlouches: 0,
+      eveningSlouches: 0,
+      nightSlouches: 0,
     };
   }
 
@@ -455,21 +493,54 @@ export class LocalModelService {
 
   public static getHistoricalSessions(): HistoricalSessionSummary[] {
     try {
-      const saved = localStorage.getItem("posturecare_historical_sessions_v2");
-      if (saved) return JSON.parse(saved);
+      const key = this.getLocalStorageKey("posturecare_historical_sessions_v2");
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
     } catch {}
 
-    return [
-      { timestamp: new Date(Date.now() - 4 * 86400000).toISOString(), durationSeconds: 5400, grade: "B", qualityScore: 84, avgLoadLbs: 18.5, peakLoadLbs: 38, fatigueScore: 28, stabilityScore: 82, complianceRate: 85 },
-      { timestamp: new Date(Date.now() - 3 * 86400000).toISOString(), durationSeconds: 6800, grade: "A", qualityScore: 92, avgLoadLbs: 14.2, peakLoadLbs: 26, fatigueScore: 18, stabilityScore: 89, complianceRate: 95 },
-      { timestamp: new Date(Date.now() - 2 * 86400000).toISOString(), durationSeconds: 4200, grade: "C", qualityScore: 71, avgLoadLbs: 26.8, peakLoadLbs: 45, fatigueScore: 42, stabilityScore: 74, complianceRate: 60 },
-      { timestamp: new Date(Date.now() - 1 * 86400000).toISOString(), durationSeconds: 7200, grade: "B", qualityScore: 81, avgLoadLbs: 19.2, peakLoadLbs: 35, fatigueScore: 31, stabilityScore: 80, complianceRate: 80 },
-    ];
+    try {
+      const userId = this.getCurrentUserId();
+      const rawSaved = localStorage.getItem(`posture_sessions_${userId}`);
+      if (rawSaved) {
+        const parsed = JSON.parse(rawSaved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((s: any) => ({
+            timestamp: s.date || s.startTime || new Date().toISOString(),
+            durationSeconds: s.duration || s.durationSeconds || 0,
+            grade: s.status === 'Excellent' ? 'A' : s.status === 'Fair' ? 'B' : 'C',
+            qualityScore: s.score || 0,
+            avgLoadLbs: s.avgLoadLbs || 12.0,
+            peakLoadLbs: s.peakLoadLbs || 25.0,
+            fatigueScore: s.fatigueScore || 20,
+            stabilityScore: s.stabilityScore || 85,
+            complianceRate: s.complianceRate || 90,
+          }));
+        }
+      }
+    } catch {}
+
+    const isDemo = localStorage.getItem('login_mode') === 'demo';
+    if (isDemo) {
+      return [
+        { timestamp: new Date(Date.now() - 4 * 86400000).toISOString(), durationSeconds: 5400, grade: "B", qualityScore: 84, avgLoadLbs: 18.5, peakLoadLbs: 38, fatigueScore: 28, stabilityScore: 82, complianceRate: 85 },
+        { timestamp: new Date(Date.now() - 3 * 86400000).toISOString(), durationSeconds: 6800, grade: "A", qualityScore: 92, avgLoadLbs: 14.2, peakLoadLbs: 26, fatigueScore: 18, stabilityScore: 89, complianceRate: 95 },
+        { timestamp: new Date(Date.now() - 2 * 86400000).toISOString(), durationSeconds: 4200, grade: "C", qualityScore: 71, avgLoadLbs: 26.8, peakLoadLbs: 45, fatigueScore: 42, stabilityScore: 74, complianceRate: 60 },
+        { timestamp: new Date(Date.now() - 1 * 86400000).toISOString(), durationSeconds: 7200, grade: "B", qualityScore: 81, avgLoadLbs: 19.2, peakLoadLbs: 35, fatigueScore: 31, stabilityScore: 80, complianceRate: 80 },
+      ];
+    }
+
+    return [];
   }
 
   public static getBreakHistory(): any[] {
     try {
-      const saved = localStorage.getItem("posture_breaks_history");
+      const key = this.getLocalStorageKey("posture_breaks_history");
+      const saved = localStorage.getItem(key);
       if (saved) return JSON.parse(saved);
     } catch {}
     return [];
@@ -529,6 +600,18 @@ export class LocalModelService {
       const historicalSessions = this.getHistoricalSessions();
       const correctionEvents = this.getCorrectionsLog();
 
+      const isDemo = localStorage.getItem('login_mode') === 'demo';
+      const hasCompleted = historicalSessions.length > 0;
+
+      // If no completed sessions and NOT currently in an active recording session (safeTotalSec === 0),
+      // and not in demo mode, return zeroed/empty metrics to prevent showing raw/live values prematurely.
+      if (!isDemo && !hasCompleted && safeTotalSec <= 0) {
+        const defaultMetrics = this.getDefaultMetrics();
+        const key = this.getLocalStorageKey(this.STORAGE_KEY_METRICS);
+        localStorage.setItem(key, JSON.stringify(defaultMetrics));
+        return defaultMetrics;
+      }
+
       // ==========================================
       // LAYER 2: BIOMECHANICAL PHYSICS
       // ==========================================
@@ -583,14 +666,11 @@ export class LocalModelService {
       // Rest Break relief calculations
       const breakHistory = this.getBreakHistory();
       const totalBreaks = breakHistory.length;
-      const avgBreakSec = totalBreaks > 0
-        ? Math.round(breakHistory.reduce((sum: number, b: any) => sum + (b.durationSeconds || 0), 0) / totalBreaks)
-        : 0;
-      const avgPostResilience = totalBreaks > 0
-        ? Math.round(breakHistory.reduce((sum: number, b: any) => sum + (b.postBreakResilience || 0), 0) / totalBreaks)
+      const avgRelief = totalBreaks > 0
+        ? Math.round(breakHistory.reduce((sum: number, b: any) => sum + (b.thoracicStressRelief || 0), 0) / totalBreaks)
         : 0;
 
-      const breakFatigueMitigation = Math.min(25, Math.round(avgPostResilience * 0.20) + Math.min(10, totalBreaks * 1.5));
+      const breakFatigueMitigation = Math.min(25, Math.round(avgRelief * 0.25) + Math.min(10, totalBreaks * 1.5));
 
       // Compose raw fatigue score modulated by personalized on-device Learned fatigue coefficient!
       const rawFatigue = Math.round(Math.min(100, ((fatigueGrowthRate * 15) + (belowWarnRatio * 60) + (safeIncidents * 3)) * ageFatigueFactor * model.fatigueCoefficient));
@@ -1056,7 +1136,8 @@ export class LocalModelService {
       };
 
       // Write-through to localStorage cache so UI gets immediate access
-      localStorage.setItem(this.STORAGE_KEY_METRICS, JSON.stringify(metrics));
+      const key = this.getLocalStorageKey(this.STORAGE_KEY_METRICS);
+      localStorage.setItem(key, JSON.stringify(metrics));
       return metrics;
     } catch (e) {
       console.error("LocalModelService failed to compute metrics:", e);
@@ -1066,18 +1147,37 @@ export class LocalModelService {
 
   public static getMetrics(): LocalBiomechanicalMetrics {
     try {
-      const saved = localStorage.getItem(this.STORAGE_KEY_METRICS);
+      const isDemo = localStorage.getItem('login_mode') === 'demo';
+      const isRecording = localStorage.getItem('posturecare_is_recording') === 'true';
+      const historicalSessions = this.getHistoricalSessions();
+      const hasCompleted = historicalSessions.length > 0;
+
+      // If we are not in demo mode, there are no completed sessions, and we are not currently recording,
+      // return default (zeroed) metrics to ensure clean slate.
+      if (!isDemo && !hasCompleted && !isRecording) {
+        return this.getDefaultMetrics();
+      }
+
+      const key = this.getLocalStorageKey(this.STORAGE_KEY_METRICS);
+      const saved = localStorage.getItem(key);
       if (saved) return JSON.parse(saved);
     } catch {}
     return this.getDefaultMetrics();
   }
 
   private static getDefaultMetrics(): LocalBiomechanicalMetrics {
-    const defaultConcentration = {
+    const isDemo = localStorage.getItem('login_mode') === 'demo';
+
+    const defaultConcentration = isDemo ? {
       morningSlouches: 4,
       afternoonSlouches: 12,
       eveningSlouches: 8,
       nightSlouches: 2,
+    } : {
+      morningSlouches: 0,
+      afternoonSlouches: 0,
+      eveningSlouches: 0,
+      nightSlouches: 0,
     };
 
     const model: PersonalModelMetadata = {
@@ -1091,118 +1191,233 @@ export class LocalModelService {
       sessionCountSinceUpdate: 0
     };
 
-    return {
-      upperBackStrainLbs: 10,
-      upperBackStaticLoadLbs: 8,
-      peakThoracicLoadLbs: 28,
-      averageThoracicLoadLbs: 15,
-      cumulativeDailyLoadKgh: 0.15,
-      weeklyLoadTrend: "stable",
-      loadClassification: "Low",
-      continuousStressMinutes: 0,
+    if (isDemo) {
+      return {
+        upperBackStrainLbs: 10,
+        upperBackStaticLoadLbs: 8,
+        peakThoracicLoadLbs: 28,
+        averageThoracicLoadLbs: 15,
+        cumulativeDailyLoadKgh: 0.15,
+        weeklyLoadTrend: "stable",
+        loadClassification: "Low",
+        continuousStressMinutes: 0,
 
-      fatigueScore: 15,
-      fatigueGrowthRate: 0.5,
-      fatigueRecoveryRate: 2.5,
-      fatigueStability: "Stable",
-      fatigueTrend: "Stable",
-      predictedFatigue30m: 15,
-      predictedFatigue60m: 15,
+        fatigueScore: 15,
+        fatigueGrowthRate: 0.5,
+        fatigueRecoveryRate: 2.5,
+        fatigueStability: "Stable",
+        fatigueTrend: "Stable",
+        predictedFatigue30m: 15,
+        predictedFatigue60m: 15,
 
-      continuousGoodPostureSeconds: 300,
-      longestStableSessionSeconds: 1200,
-      averageEnduranceSeconds: 1200,
-      dailyEnduranceScore: 85,
-      weeklyEnduranceImprovement: 12.5,
-
-      personalizedGoodThreshold: 80,
-      personalizedWarnThreshold: 65,
-      personalizedRecoveryThreshold: 75,
-
-      recoverySpeedPercent: 88,
-      recoveryEfficiency: 88,
-      averageRecoveryTimeSeconds: 5.4,
-      recoveryClassification: "Excellent",
-
-      dailyUpperBackHealthScore: 86,
-
-      breakUrgency: "Low",
-      breakRecommendationMessage: "Your thoracic alignment is stable. No break required.",
-
-      recognizedHabits: ["Highly Balanced Dynamic Muscle Alignment"],
-
-      stabilityScore: 85,
-
-      averageResponseTimeSeconds: 5.4,
-      fastestResponseTimeSeconds: 3,
-      slowestResponseTimeSeconds: 12,
-      dailyComplianceRate: 85,
-
-      remindersSentCount: 0,
-      correctionsAchievedCount: 0,
-      ignoredRemindersCount: 0,
-      reminderSuccessPercentage: 100,
-
-      sessionGrade: "A",
-      sessionQualityScore: 86,
-
-      weeklyImprovementRate: 14.5,
-      weeklyRegressionRate: 0,
-      weeklyLoadReductionPercent: 8.2,
-      weeklyEnduranceGainPercent: 12.5,
-      weeklyStabilityGainPercent: 10.4,
-      weeklyRecoveryGainPercent: 11.2,
-
-      monthlyTrendVector: "improving",
-      monthlyImprovementPercent: 18.4,
-
-      injuryRisk: {
-        muscleStrainProb: 15,
-        thoracicFatigueProb: 18,
-        posturalOverloadProb: 12,
-        riskClassification: "Very Low",
-        clinicalAdvice: "Your thoracic muscles show good structural balance. Continue micro-movements to lubricate spinal joints."
-      },
-
-      digitalProfile: {
-        sittingStyle: "Hyper-Focused",
-        typicalSlouchPattern: "Gradual Sinking",
+        continuousGoodPostureSeconds: 300,
+        longestStableSessionSeconds: 1200,
         averageEnduranceSeconds: 1200,
-        fatigueOnsetMinutes: 14,
-        recoveryType: "Express",
-        peakProductivityPeriod: "Morning (8AM-12PM)",
-        highRiskTimeWindow: "2:00 PM - 4:00 PM (Afternoon Dip)"
-      },
-      readinessScore: 88,
+        dailyEnduranceScore: 85,
+        weeklyEnduranceImprovement: 12.5,
 
-      slouchConcentration: defaultConcentration,
+        personalizedGoodThreshold: 80,
+        personalizedWarnThreshold: 65,
+        personalizedRecoveryThreshold: 75,
 
-      mostImprovedMetric: "Posture Endurance (+12.5% improvement)",
-      weakestMetric: "Muscle Fatigue (Index is stable at 15%)",
-      todaysAchievement: "Complete one sitting session to unlock your Health Report.",
-      largestImprovement: "Upper back strain reduced by 8.2% under pressure.",
-      mostCommonHabit: "Highly Balanced Dynamic Muscle Alignment",
-      recoveryPattern: "Steady alignment adjusted within 5s from reminder chimes.",
-      dailyRecommendation: "Excellent paraspinal balance. Take short standing breaks every 45 minutes to maintain spinal nutrition.",
+        recoverySpeedPercent: 88,
+        recoveryEfficiency: 88,
+        averageRecoveryTimeSeconds: 5.4,
+        recoveryClassification: "Excellent",
 
-      // NEW ADAPTIVE COGNITIVE METRICS DEFAULTS
-      markovState: "Optimal Upright",
-      markovTransitions: {
-        stateUprightToLean: 12,
-        stateLeanToSlouch: 25,
-        stateSlouchToSevere: 5,
-        stateSlouchToRecovery: 45
-      },
-      logisticComplianceEstimate: 88,
-      anomalyDetected: false,
-      anomalyScore: 10,
-      anomalyDetails: "Alignment is matching standard baseline profile.",
-      confidenceScore: 94,
-      confidenceInterval: "± 1.2%",
-      sensorDriftEstimatePercent: 0.1,
-      evidenceChain: [],
-      modelMetadata: model
-    };
+        dailyUpperBackHealthScore: 86,
+
+        breakUrgency: "Low",
+        breakRecommendationMessage: "Your thoracic alignment is stable. No break required.",
+
+        recognizedHabits: ["Highly Balanced Dynamic Muscle Alignment"],
+
+        stabilityScore: 85,
+
+        averageResponseTimeSeconds: 5.4,
+        fastestResponseTimeSeconds: 3,
+        slowestResponseTimeSeconds: 12,
+        dailyComplianceRate: 85,
+
+        remindersSentCount: 0,
+        correctionsAchievedCount: 0,
+        ignoredRemindersCount: 0,
+        reminderSuccessPercentage: 100,
+
+        sessionGrade: "A",
+        sessionQualityScore: 86,
+
+        weeklyImprovementRate: 14.5,
+        weeklyRegressionRate: 0,
+        weeklyLoadReductionPercent: 8.2,
+        weeklyEnduranceGainPercent: 12.5,
+        weeklyStabilityGainPercent: 10.4,
+        weeklyRecoveryGainPercent: 11.2,
+
+        monthlyTrendVector: "improving",
+        monthlyImprovementPercent: 18.4,
+
+        injuryRisk: {
+          muscleStrainProb: 15,
+          thoracicFatigueProb: 18,
+          posturalOverloadProb: 12,
+          riskClassification: "Very Low",
+          clinicalAdvice: "Your thoracic muscles show good structural balance. Continue micro-movements to lubricate spinal joints."
+        },
+
+        digitalProfile: {
+          sittingStyle: "Hyper-Focused",
+          typicalSlouchPattern: "Gradual Sinking",
+          averageEnduranceSeconds: 1200,
+          fatigueOnsetMinutes: 14,
+          recoveryType: "Express",
+          peakProductivityPeriod: "Morning (8AM-12PM)",
+          highRiskTimeWindow: "2:00 PM - 4:00 PM (Afternoon Dip)"
+        },
+        readinessScore: 88,
+
+        slouchConcentration: defaultConcentration,
+
+        mostImprovedMetric: "Posture Endurance (+12.5% improvement)",
+        weakestMetric: "Muscle Fatigue (Index is stable at 15%)",
+        todaysAchievement: "Complete one sitting session to unlock your Health Report.",
+        largestImprovement: "Upper back strain reduced by 8.2% under pressure.",
+        mostCommonHabit: "Highly Balanced Dynamic Muscle Alignment",
+        recoveryPattern: "Steady alignment adjusted within 5s from reminder chimes.",
+        dailyRecommendation: "Excellent paraspinal balance. Take short standing breaks every 45 minutes to maintain spinal nutrition.",
+
+        // NEW ADAPTIVE COGNITIVE METRICS DEFAULTS
+        markovState: "Optimal Upright",
+        markovTransitions: {
+          stateUprightToLean: 12,
+          stateLeanToSlouch: 25,
+          stateSlouchToSevere: 5,
+          stateSlouchToRecovery: 45
+        },
+        logisticComplianceEstimate: 88,
+        anomalyDetected: false,
+        anomalyScore: 10,
+        anomalyDetails: "Alignment is matching standard baseline profile.",
+        confidenceScore: 94,
+        confidenceInterval: "± 1.2%",
+        sensorDriftEstimatePercent: 0.1,
+        evidenceChain: [],
+        modelMetadata: model
+      };
+    } else {
+      return {
+        upperBackStrainLbs: 0,
+        upperBackStaticLoadLbs: 0,
+        peakThoracicLoadLbs: 0,
+        averageThoracicLoadLbs: 0,
+        cumulativeDailyLoadKgh: 0,
+        weeklyLoadTrend: "stable",
+        loadClassification: "Low",
+        continuousStressMinutes: 0,
+
+        fatigueScore: 0,
+        fatigueGrowthRate: 0,
+        fatigueRecoveryRate: 0,
+        fatigueStability: "Stable",
+        fatigueTrend: "Stable",
+        predictedFatigue30m: 0,
+        predictedFatigue60m: 0,
+
+        continuousGoodPostureSeconds: 0,
+        longestStableSessionSeconds: 0,
+        averageEnduranceSeconds: 0,
+        dailyEnduranceScore: 0,
+        weeklyEnduranceImprovement: 0,
+
+        personalizedGoodThreshold: 80,
+        personalizedWarnThreshold: 65,
+        personalizedRecoveryThreshold: 75,
+
+        recoverySpeedPercent: 0,
+        recoveryEfficiency: 0,
+        averageRecoveryTimeSeconds: 0,
+        recoveryClassification: "Excellent",
+
+        dailyUpperBackHealthScore: 0,
+
+        breakUrgency: "Low",
+        breakRecommendationMessage: "No sessions recorded yet. Start a posture session to receive dynamic recommendations.",
+
+        recognizedHabits: ["No postural data logged yet."],
+
+        stabilityScore: 0,
+
+        averageResponseTimeSeconds: 0,
+        fastestResponseTimeSeconds: 0,
+        slowestResponseTimeSeconds: 0,
+        dailyComplianceRate: 0,
+
+        remindersSentCount: 0,
+        correctionsAchievedCount: 0,
+        ignoredRemindersCount: 0,
+        reminderSuccessPercentage: 0,
+
+        sessionGrade: "A",
+        sessionQualityScore: 0,
+
+        weeklyImprovementRate: 0,
+        weeklyRegressionRate: 0,
+        weeklyLoadReductionPercent: 0,
+        weeklyEnduranceGainPercent: 0,
+        weeklyStabilityGainPercent: 0,
+        weeklyRecoveryGainPercent: 0,
+
+        monthlyTrendVector: "stable",
+        monthlyImprovementPercent: 0,
+
+        injuryRisk: {
+          muscleStrainProb: 0,
+          thoracicFatigueProb: 0,
+          posturalOverloadProb: 0,
+          riskClassification: "Very Low",
+          clinicalAdvice: "No sessions recorded yet."
+        },
+
+        digitalProfile: {
+          sittingStyle: "Erect / Dynamic",
+          typicalSlouchPattern: "Gradual Sinking",
+          averageEnduranceSeconds: 0,
+          fatigueOnsetMinutes: 0,
+          recoveryType: "Express",
+          peakProductivityPeriod: "Morning (8AM-12PM)",
+          highRiskTimeWindow: "N/A"
+        },
+        readinessScore: 0,
+
+        slouchConcentration: defaultConcentration,
+
+        mostImprovedMetric: "N/A",
+        weakestMetric: "N/A",
+        todaysAchievement: "Complete one sitting session to unlock your Health Report.",
+        largestImprovement: "N/A",
+        mostCommonHabit: "N/A",
+        recoveryPattern: "N/A",
+        dailyRecommendation: "Complete a posture tracking session to start monitoring paraspinal alignment.",
+
+        // NEW ADAPTIVE COGNITIVE METRICS DEFAULTS
+        markovState: "Optimal Upright",
+        markovTransitions: {
+          stateUprightToLean: 0,
+          stateLeanToSlouch: 0,
+          stateSlouchToSevere: 0,
+          stateSlouchToRecovery: 0
+        },
+        logisticComplianceEstimate: 0,
+        anomalyDetected: false,
+        anomalyScore: 0,
+        anomalyDetails: "Alignment is matching standard baseline profile.",
+        confidenceScore: 100,
+        confidenceInterval: "± 0%",
+        sensorDriftEstimatePercent: 0,
+        evidenceChain: [],
+        modelMetadata: model
+      };
+    }
   }
 
   /**

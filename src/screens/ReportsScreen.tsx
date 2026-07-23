@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useSelector } from 'react-redux';
-import { RootState } from '../store/store';
+import { useSelector, useDispatch } from 'react-redux';
+import { RootState, setIsRecordingSession } from '../store/store';
 import { 
   Download, 
   TrendingUp, 
@@ -28,10 +28,12 @@ import {
 import { cn } from '../lib/utils';
 import { db, auth } from '../lib/firebase';
 import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { SessionService } from '../services/sessionService';
 import { LocalModelService } from '../services/localModelService';
 
 export const ReportsScreen: React.FC = () => {
-  const { thresholds, score, incidents, totalSessionSeconds, baselineAngle } = useSelector((state: RootState) => state.posture);
+  const dispatch = useDispatch();
+  const { thresholds, score, incidents, totalSessionSeconds, baselineAngle, isRecordingSession } = useSelector((state: RootState) => state.posture);
   const user = useSelector((state: RootState) => state.auth.user);
   
   // View states
@@ -47,49 +49,25 @@ export const ReportsScreen: React.FC = () => {
   const historicalSessions = LocalModelService.getHistoricalSessions();
   const breakHistory = LocalModelService.getBreakHistory();
 
+  const isDemo = localStorage.getItem('login_mode') === 'demo';
+  const hasData = totalSessionSeconds > 0;
+  const localKey = user ? `posture_sessions_${user.id}` : '';
+  const initialLocalSessions = localKey ? JSON.parse(localStorage.getItem(localKey) || '[]') : [];
+  const completedSessionsCount = initialLocalSessions.length;
+  const hasCompletedSessions = completedSessionsCount >= 1;
+
   useEffect(() => {
     const fetchSessions = async () => {
       setIsLoading(true);
-      const list: any[] = [];
-
-      // 1. First, retrieve locally stored sessions for the current logged-in user
-      if (user) {
-        try {
-          const localKey = `posture_sessions_${user.id}`;
-          const localSessions = JSON.parse(localStorage.getItem(localKey) || '[]');
-          list.push(...localSessions);
-        } catch (localErr) {
-          console.error('Error loading local sessions:', localErr);
-        }
+      try {
+        const userId = user?.id || auth.currentUser?.uid || 'guest';
+        const list = await SessionService.fetchUnifiedSessions(userId);
+        setSessions(list);
+      } catch (err) {
+        console.error('Error fetching sessions in ReportsScreen:', err);
+      } finally {
+        setIsLoading(false);
       }
-
-      // 2. Next, load cloud-synced sessions if Firebase Auth is connected
-      if (auth.currentUser) {
-        try {
-          const q = query(
-            collection(db, 'users', auth.currentUser.uid, 'sessions'),
-            orderBy('date', 'desc'),
-            limit(30)
-          );
-          const querySnapshot = await getDocs(q);
-          querySnapshot.forEach((doc) => {
-            const data = doc.data();
-            // Prevent duplicates if already loaded locally
-            const isDuplicate = list.some(s => s.id === doc.id || (s.date === data.date && s.duration === data.duration));
-            if (!isDuplicate) {
-              list.push({ id: doc.id, ...data });
-            }
-          });
-        } catch (err) {
-          console.error('Error fetching Firestore sessions:', err);
-        }
-      }
-
-      // 3. Sort by date descending
-      list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-      setSessions(list);
-      setIsLoading(false);
     };
 
     fetchSessions();
@@ -276,7 +254,7 @@ export const ReportsScreen: React.FC = () => {
         <button 
           id="export_clinical_report_btn"
           onClick={handleExportClinicalReport}
-          disabled={isGenerating}
+          disabled={isGenerating || (!isRecordingSession && !hasCompletedSessions && !isDemo)}
           className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-2xl text-xs font-black shadow-lg shadow-indigo-600/20 flex items-center gap-2 active:scale-95 transition-all disabled:opacity-50"
         >
           {isGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download size={14} />}
@@ -312,7 +290,31 @@ export const ReportsScreen: React.FC = () => {
 
       {/* Dynamic Content Switching with motion transitions */}
       <AnimatePresence mode="wait">
-        {viewMode === 'patient' ? (
+        {!isRecordingSession && !hasCompletedSessions && !isDemo ? (
+          <motion.div
+            key="standby_view"
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -15 }}
+            transition={{ duration: 0.2 }}
+            className="flex flex-col items-center justify-center py-16 text-center px-6 bg-white rounded-[32px] border border-dashed border-slate-200 shadow-soft"
+            id="reports_standby_panel"
+          >
+            <div className="w-16 h-16 rounded-full bg-slate-50 flex items-center justify-center text-indigo-600 mb-4 border border-slate-100 shadow-sm">
+              <Stethoscope className="w-8 h-8 text-indigo-500 animate-pulse" />
+            </div>
+            <h3 className="text-base font-black text-slate-800 uppercase tracking-wider mb-2">Posture Clinical Reports Inactive</h3>
+            <p className="text-xs text-slate-500 font-semibold max-w-[420px] leading-relaxed mb-6">
+              Biomechanical telemetry logs, paraspinal joint load torque, estimated muscle fatigue models, and personalized rehabilitation plans are compiled dynamically once you start recording your posture tracking session.
+            </p>
+            <button 
+              onClick={() => dispatch(setIsRecordingSession(true))}
+              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-lg shadow-indigo-600/10"
+            >
+              Start Recording Session
+            </button>
+          </motion.div>
+        ) : viewMode === 'patient' ? (
           <motion.div
             key="patient_view"
             initial={{ opacity: 0, y: 15 }}
@@ -357,16 +359,18 @@ export const ReportsScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Post Break Resilience */}
+              {/* Post Break Fatigue */}
               <div className="col-span-1 bg-indigo-50/50 p-5 rounded-[28px] border border-indigo-100 flex flex-col justify-between h-[130px] shadow-sm">
                 <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center text-indigo-500 shadow-sm">
                   <Shield size={16} fill="currentColor" />
                 </div>
                 <div>
                   <div className="text-2xl font-black text-indigo-600">
-                    {breakHistory && breakHistory.length > 0 ? `${breakHistory[0].postBreakResilience}%` : `${localMetrics.recoveryEfficiency}%`}
+                    {completedSessionsCount <= 1 && !isDemo ? 'N/A' : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].postBreakFatigue ?? (100 - (breakHistory[0] as any).postBreakResilience || 0)}%` : '0%')}
                   </div>
-                  <p className="text-indigo-700/60 text-[9px] font-black uppercase tracking-wider leading-none">Post-Rest Resilience</p>
+                  <p className="text-indigo-700/60 text-[9px] font-black uppercase tracking-wider leading-none">
+                    {completedSessionsCount <= 1 && !isDemo ? 'Requires > 1 session' : 'Post-Break Fatigue'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -379,14 +383,20 @@ export const ReportsScreen: React.FC = () => {
                   <h3 className="text-sm font-black text-slate-800">Micro-Break Rehabilitation Log</h3>
                 </div>
                 <span className="text-[9px] font-black uppercase text-emerald-600 bg-emerald-50 border border-emerald-100 px-3 py-1 rounded-full">
-                  {breakHistory.length} Sessions Logged
+                  {completedSessionsCount <= 1 && !isDemo ? 0 : breakHistory.length} Sessions Logged
                 </span>
               </div>
               <p className="text-[11px] font-medium text-slate-500 leading-relaxed">
                 Taking regular 60-second spinal decompressions during long sitting stretches mitigates paraspinal load and prevents ligament creep. Here are your latest rest entries:
               </p>
 
-              {breakHistory && breakHistory.length > 0 ? (
+              {completedSessionsCount <= 1 && !isDemo ? (
+                <div className="p-8 bg-slate-50 rounded-2xl text-center text-slate-400 border border-dashed border-slate-200">
+                  <Activity className="mx-auto mb-2 text-slate-300 animate-pulse" size={24} />
+                  <span className="text-xs font-bold block text-slate-700">Analytics Lock</span>
+                  <span className="text-[10px] text-slate-400">More than 1 completed posture tracking session is required to compile paraspinal recovery and rest metrics.</span>
+                </div>
+              ) : breakHistory && breakHistory.length > 0 ? (
                 <div className="space-y-2.5 max-h-52 overflow-y-auto pr-1">
                   {breakHistory.map((br, idx) => (
                     <div key={br.id || idx} className="p-3 bg-slate-50 border border-slate-100 rounded-2xl flex items-center justify-between hover:bg-slate-100/30 transition-all">
@@ -397,7 +407,7 @@ export const ReportsScreen: React.FC = () => {
                         <div>
                           <span className="text-[11px] font-black text-slate-700 block">Micro-Rest Completed</span>
                           <span className="text-[8px] font-bold text-slate-400 uppercase">
-                            {new Date(br.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {br.durationSeconds}s duration
+                            {new Date(br.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {br.durationSeconds < 60 ? `${br.durationSeconds}s` : `${Math.floor(br.durationSeconds / 60)}m ${br.durationSeconds % 60}s`} duration
                           </span>
                         </div>
                       </div>
@@ -407,8 +417,12 @@ export const ReportsScreen: React.FC = () => {
                           <span className="text-xs font-black text-rose-500">{br.preBreakFatigue}%</span>
                         </div>
                         <div className="text-right">
-                          <span className="text-[8px] font-black text-emerald-400 uppercase tracking-widest block">Resilience Gain</span>
-                          <span className="text-xs font-black text-emerald-500">+{br.postBreakResilience - 20}%</span>
+                          <span className="text-[8px] font-black text-indigo-400 uppercase tracking-widest block">Post-Fatigue</span>
+                          <span className="text-xs font-black text-indigo-600">{br.postBreakFatigue ?? (100 - (br as any).postBreakResilience || 0)}%</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[8px] font-black text-emerald-400 uppercase tracking-widest block">Relief</span>
+                          <span className="text-xs font-black text-emerald-500">+{br.thoracicStressRelief}%</span>
                         </div>
                       </div>
                     </div>
@@ -655,29 +669,31 @@ export const ReportsScreen: React.FC = () => {
       </AnimatePresence>
 
       {/* Structured Physiotherapeutic recommendations */}
-      <div className="bg-white p-6 rounded-[32px] border border-border shadow-sm space-y-4" id="clinical_recommendations_block">
-        <h3 className="text-sm font-black uppercase tracking-wider text-slate-400">Rehabilitation Exercises Plan</h3>
-        <div className="space-y-4">
-          {[
-            { title: "Pectoralis doorway stretch", desc: "Reduces upper back hunching by elongating compressed anterior thoracic musculature. Complete 3 sets of 30-sec holds daily.", duration: "3 mins" },
-            { title: "Prone Cobra holds", desc: "Strengthens fatigued lower and middle trapezius fibers to increase static posture endurance. Complete 4 sets of 15-sec holds.", duration: "5 mins" },
-            { title: "Wall Angels spinal posture training", desc: "Assists cervical joint repositioning and thoracic spinal nutrition. 2 sets of 15 repetitions during active micro-breaks.", duration: "4 mins" }
-          ].map((rec, i) => (
-            <div key={i} className="flex gap-4 items-start bg-slate-50/50 p-3.5 rounded-2xl border border-slate-100/60">
-               <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white text-[10px] font-black flex items-center justify-center flex-shrink-0 mt-0.5">
-                  {i + 1}
-               </div>
-               <div className="space-y-0.5">
-                 <div className="flex items-center gap-2">
-                   <h4 className="text-xs font-black text-slate-800">{rec.title}</h4>
-                   <span className="text-[8px] font-bold text-slate-400 uppercase bg-slate-100 px-1.5 py-0.5 rounded">{rec.duration}</span>
+      {(isRecordingSession || hasCompletedSessions || isDemo) && (
+        <div className="bg-white p-6 rounded-[32px] border border-border shadow-sm space-y-4" id="clinical_recommendations_block">
+          <h3 className="text-sm font-black uppercase tracking-wider text-slate-400">Rehabilitation Exercises Plan</h3>
+          <div className="space-y-4">
+            {[
+              { title: "Pectoralis doorway stretch", desc: "Reduces upper back hunching by elongating compressed anterior thoracic musculature. Complete 3 sets of 30-sec holds daily.", duration: "3 mins" },
+              { title: "Prone Cobra holds", desc: "Strengthens fatigued lower and middle trapezius fibers to increase static posture endurance. Complete 4 sets of 15-sec holds.", duration: "5 mins" },
+              { title: "Wall Angels spinal posture training", desc: "Assists cervical joint repositioning and thoracic spinal nutrition. 2 sets of 15 repetitions during active micro-breaks.", duration: "4 mins" }
+            ].map((rec, i) => (
+              <div key={i} className="flex gap-4 items-start bg-slate-50/50 p-3.5 rounded-2xl border border-slate-100/60">
+                 <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white text-[10px] font-black flex items-center justify-center flex-shrink-0 mt-0.5">
+                    {i + 1}
                  </div>
-                 <p className="text-[11px] font-semibold text-slate-500 leading-relaxed">{rec.desc}</p>
-               </div>
-            </div>
-          ))}
+                 <div className="space-y-0.5">
+                   <div className="flex items-center gap-2">
+                     <h4 className="text-xs font-black text-slate-800">{rec.title}</h4>
+                     <span className="text-[8px] font-bold text-slate-400 uppercase bg-slate-100 px-1.5 py-0.5 rounded">{rec.duration}</span>
+                   </div>
+                   <p className="text-[11px] font-semibold text-slate-500 leading-relaxed">{rec.desc}</p>
+                 </div>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Historical Session Data Table Breakdown */}
       <div className="bg-white rounded-[32px] border border-border shadow-sm overflow-hidden" id="reports_historical_table_block">
@@ -705,43 +721,53 @@ export const ReportsScreen: React.FC = () => {
                   </td>
                 </tr>
               )}
-              {!isLoading && (sessions.length > 0 ? sessions : [
-                { date: 'Today (Active)', score: score, avgLoadLbs: localMetrics.averageThoracicLoadLbs, status: score >= thresholds.good ? 'Excellent' : 'Fair', grade: 'B' },
-                { date: 'Yesterday', score: 85, avgLoadLbs: 14.5, status: 'Excellent', grade: 'A' },
-                { date: '2 days ago', score: 72, avgLoadLbs: 19.2, status: 'Fair', grade: 'C' },
-                { date: '3 days ago', score: 91, avgLoadLbs: 11.4, status: 'Excellent', grade: 'A' },
-                { date: '4 days ago', score: 63, avgLoadLbs: 28.5, status: 'Poor', grade: 'D' },
-              ]).map((row, i) => {
-                const formattedDate = row.date && row.date.includes('T')
-                  ? new Date(row.date).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                  : row.date;
-                const finalScore = row.qualityScore !== undefined ? row.qualityScore : (row.score || 80);
-                const isExcellent = finalScore >= 80;
-                const isFair = finalScore >= 65 && finalScore < 80;
-                
-                return (
-                  <tr key={i} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="px-4 py-4">{formattedDate}</td>
-                    <td className="px-4 py-4 text-center">{Math.round(finalScore)}%</td>
-                    <td className="px-4 py-4 text-center">{row.avgLoadLbs || 14} Lbs</td>
-                    <td className="px-4 py-4 text-center">
-                      <span className={cn(
-                        "px-2 py-0.5 rounded-full text-[9px] font-black uppercase",
-                        isExcellent ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : 
-                        isFair ? "bg-amber-50 text-amber-600 border border-amber-100" : 
-                        "bg-rose-50 text-rose-600 border border-rose-100"
-                      )}>
-                        {isExcellent ? 'Excellent' : isFair ? 'Fair' : 'Poor'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-4 text-right">
-                      <span className="text-slate-800 font-black text-sm bg-slate-100 px-2.5 py-0.5 rounded-md">
-                        {row.grade || (finalScore >= 90 ? 'A' : finalScore >= 80 ? 'B' : finalScore >= 70 ? 'C' : 'D')}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
+              {!isLoading && sessions.length === 0 && !hasCompletedSessions && !isDemo ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                    No sessions recorded yet. Complete your first posture tracking session to view clinical logs.
+                  </td>
+                </tr>
+              ) : (
+                !isLoading && (sessions.length > 0 ? sessions : (isDemo ? [
+                  { date: 'Today (Active)', score: score, avgLoadLbs: localMetrics.averageThoracicLoadLbs, status: score >= thresholds.good ? 'Excellent' : 'Fair', grade: 'B' },
+                  { date: 'Yesterday', score: 85, avgLoadLbs: 14.5, status: 'Excellent', grade: 'A' },
+                  { date: '2 days ago', score: 72, avgLoadLbs: 19.2, status: 'Fair', grade: 'C' },
+                  { date: '3 days ago', score: 91, avgLoadLbs: 11.4, status: 'Excellent', grade: 'A' },
+                  { date: '4 days ago', score: 63, avgLoadLbs: 28.5, status: 'Poor', grade: 'D' },
+                ] : (hasCompletedSessions ? [
+                  { date: 'Today (Active)', score: score, avgLoadLbs: localMetrics.averageThoracicLoadLbs, status: score >= thresholds.good ? 'Excellent' : 'Fair', grade: 'B' }
+                ] : []))).map((row, i) => {
+                  const formattedDate = row.date && row.date.includes('T')
+                    ? new Date(row.date).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                    : row.date;
+                  const finalScore = row.qualityScore !== undefined ? row.qualityScore : (row.score || 80);
+                  const isExcellent = finalScore >= 80;
+                  const isFair = finalScore >= 65 && finalScore < 80;
+                  
+                  return (
+                    <tr key={i} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="px-4 py-4">{formattedDate}</td>
+                      <td className="px-4 py-4 text-center">{Math.round(finalScore)}%</td>
+                      <td className="px-4 py-4 text-center">{row.avgLoadLbs || 14} Lbs</td>
+                      <td className="px-4 py-4 text-center">
+                        <span className={cn(
+                          "px-2 py-0.5 rounded-full text-[9px] font-black uppercase",
+                          isExcellent ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : 
+                          isFair ? "bg-amber-50 text-amber-600 border border-amber-100" : 
+                          "bg-rose-50 text-rose-600 border border-rose-100"
+                        )}>
+                          {isExcellent ? 'Excellent' : isFair ? 'Fair' : 'Poor'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-right">
+                        <span className="text-slate-800 font-black text-sm bg-slate-100 px-2.5 py-0.5 rounded-md">
+                          {row.grade || (finalScore >= 90 ? 'A' : finalScore >= 80 ? 'B' : finalScore >= 70 ? 'C' : 'D')}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

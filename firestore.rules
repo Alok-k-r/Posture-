@@ -31,15 +31,26 @@ service cloud.firestore {
 
     function isValidSession(data) {
       return data.keys().hasAll(['date', 'startTime', 'endTime', 'duration', 'score', 'slouches'])
-             && data.keys().size() <= 12
+             && data.keys().size() <= 20
              && data.duration is number && data.duration >= 0
              && data.score is number && data.score >= 0 && data.score <= 100
              && data.slouches is number && data.slouches >= 0;
     }
 
+    function isValidBreak(data) {
+      return data.keys().hasAll(['timestamp', 'preBreakFatigue', 'postBreakResilience', 'thoracicStressRelief', 'durationSeconds'])
+             && data.keys().size() <= 10
+             && data.timestamp is string && data.timestamp.size() <= 50
+             && data.preBreakFatigue is number && data.preBreakFatigue >= 0
+             && data.postBreakResilience is number && data.postBreakResilience >= 0 && data.postBreakResilience <= 100
+             && data.thoracicStressRelief is number && data.thoracicStressRelief >= 0 && data.thoracicStressRelief <= 100
+             && data.durationSeconds is number && data.durationSeconds >= 0;
+    }
+
     // 4. Secure Resource Endpoints
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read: if isSignedIn() && (isOwner(userId) || (resource != null && resource.data.email == request.auth.token.email));
+      allow write: if isOwner(userId);
 
       // User calibration and alarm thresholds settings
       match /settings/thresholds {
@@ -63,9 +74,25 @@ service cloud.firestore {
         allow list: if isOwner(userId);
         allow get: if isOwner(userId);
         allow create: if isOwner(userId) && isValidId(sessionId) && isValidSession(incoming());
-        allow update: if false; // Sessions are immutable historical telemetry records
-        allow delete: if false; // Prevention of clinical/insurance tracking log manipulation
+        allow update: if isOwner(userId) && isValidSession(incoming());
+        allow delete: if isOwner(userId); // Enabled for account teardown & GDPR sovereignty
       }
+
+      // Paraspinal decompression/break history
+      match /breaks/{breakId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(breakId) && isValidBreak(incoming());
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    match /devices/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    match /test/{docId} {
+      allow read: if true;
     }
   }
 }
