@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { useSelector } from 'react-redux';
-import { RootState } from '../store/store';
-import { FileText, Sliders, User, Brain, Bell, Shield, Info, ChevronRight, Share2, Wifi, WifiOff, RefreshCw, Bluetooth, Cpu } from 'lucide-react';
+import { useSelector, useDispatch } from 'react-redux';
+import { RootState, startTour } from '../store/store';
+import { FileText, Sliders, User, Brain, Bell, Shield, Info, ChevronRight, Share2, Wifi, WifiOff, RefreshCw, Bluetooth, Cpu, Sparkles, Bot } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { TermsOfServiceModal } from '../components/TermsOfServiceModal';
 import { PrivacyPolicyModal } from '../components/PrivacyPolicyModal';
 
 export const MoreScreen: React.FC = () => {
   const navigate = useNavigate();
+  const dispatch = useDispatch();
   const { isOnline, syncQueue } = useSelector((state: RootState) => state.sync);
   const device = useSelector((state: RootState) => state.device);
   const [isTermsOpen, setIsTermsOpen] = useState(false);
@@ -37,6 +38,38 @@ export const MoreScreen: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 gap-4">
+        {/* Interactive App Tour Callout Card */}
+        <div className="glass p-5 sm:p-6 rounded-[36px] border border-emerald-200/80 shadow-premium bg-gradient-to-r from-emerald-50/80 via-teal-50/50 to-indigo-50/50 relative overflow-hidden">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-4 text-left">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500 text-white flex items-center justify-center shadow-soft shrink-0">
+                <Bot size={24} className="animate-bounce text-white" />
+              </div>
+              <div>
+                <h4 className="text-sm font-black text-slate-800 flex items-center gap-2 leading-none">
+                  Interactive App Tour
+                  <span className="text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider bg-emerald-200 text-emerald-900 flex items-center gap-1">
+                    <Sparkles size={10} />
+                    Posture Assistant
+                  </span>
+                </h4>
+                <p className="text-[10px] sm:text-xs text-slate-500 font-bold mt-1.5 leading-snug">
+                  Take a guided step-by-step walkthrough of the 3D Spine, Tele-Physio workspace, custom slouch thresholds, and AI health co-pilot.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => dispatch(startTour(0))}
+              className="w-full sm:w-auto px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 shadow-premium active:scale-95 transition-all shrink-0"
+            >
+              <Bot size={16} className="text-emerald-400" />
+              <span>Start App Tour</span>
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        </div>
+
         {/* Device Setup Callout Card */}
         <div className="glass p-6 rounded-[36px] border border-indigo-200/50 hover:border-indigo-300 transition-all shadow-premium bg-gradient-to-r from-indigo-50/50 to-white relative overflow-hidden">
           <div className="absolute right-[-20px] top-[-20px] w-32 h-32 bg-indigo-100/40 rounded-full blur-2xl pointer-events-none" />

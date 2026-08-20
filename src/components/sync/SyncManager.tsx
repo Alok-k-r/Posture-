@@ -173,6 +173,28 @@ export const SyncManager: React.FC = () => {
     }
   }, [isOnline, syncQueue.length, auth.currentUser]);
 
+  const sanitizeForFirestore = (obj: any): any => {
+    if (obj === null || obj === undefined) {
+      return null;
+    }
+    if (typeof obj !== 'object') {
+      return obj;
+    }
+    if (Array.isArray(obj)) {
+      return obj.map(item => sanitizeForFirestore(item));
+    }
+    const cleanObj: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        const cleaned = sanitizeForFirestore(value);
+        if (cleaned !== undefined) {
+          cleanObj[key] = cleaned;
+        }
+      }
+    }
+    return cleanObj;
+  };
+
   const processSyncQueue = async () => {
     const currentQueue = [...syncQueue];
     for (const action of currentQueue) {
@@ -181,7 +203,7 @@ export const SyncManager: React.FC = () => {
         dispatch(removeFromSyncQueue(action.id));
       } catch (error) {
         console.error('Sync failed for action:', action.type, error);
-        break; 
+        dispatch(removeFromSyncQueue(action.id));
       }
     }
   };
@@ -190,32 +212,33 @@ export const SyncManager: React.FC = () => {
     if (!auth.currentUser) return;
     const { type, payload } = action;
     const userId = auth.currentUser.uid;
+    const cleanPayload = sanitizeForFirestore(payload);
 
     switch (type) {
       case 'SYNC_USER_PROFILE': {
         const ref = doc(db, 'users', userId);
-        await setDoc(ref, payload, { merge: true });
+        await setDoc(ref, cleanPayload, { merge: true });
         break;
       }
       case 'SYNC_THRESHOLDS': {
         const ref = doc(db, 'users', userId, 'settings', 'thresholds');
-        await setDoc(ref, payload);
+        await setDoc(ref, cleanPayload);
         break;
       }
       case 'SYNC_APPOINTMENT': {
-        const ref = doc(db, 'users', userId, 'appointments', payload.id);
-        const { id, ...data } = payload;
+        const ref = doc(db, 'users', userId, 'appointments', cleanPayload.id);
+        const { id, ...data } = cleanPayload;
         await setDoc(ref, data, { merge: true });
         break;
       }
       case 'DELETE_APPOINTMENT': {
-        const ref = doc(db, 'users', userId, 'appointments', payload.id);
+        const ref = doc(db, 'users', userId, 'appointments', cleanPayload.id);
         await setDoc(ref, { _deleted: true }, { merge: true });
         break;
       }
       case 'SYNC_BREAK': {
-        const ref = doc(db, 'users', userId, 'breaks', payload.id);
-        const { id, ...data } = payload;
+        const ref = doc(db, 'users', userId, 'breaks', cleanPayload.id);
+        const { id, ...data } = cleanPayload;
         await setDoc(ref, data, { merge: true });
         break;
       }

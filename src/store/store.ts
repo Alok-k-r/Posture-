@@ -71,14 +71,32 @@ const authSlice = createSlice({
 // UI Slice
 interface UIState {
   chatOpen: boolean;
+  tourActive: boolean;
+  tourStep: number;
 }
 
 const uiSlice = createSlice({
   name: 'ui',
-  initialState: { chatOpen: false } as UIState,
+  initialState: { chatOpen: false, tourActive: false, tourStep: 0 } as UIState,
   reducers: {
     setChatOpen: (state, action: PayloadAction<boolean>) => {
       state.chatOpen = action.payload;
+    },
+    startTour: (state, action: PayloadAction<number | undefined>) => {
+      state.tourActive = true;
+      state.tourStep = action.payload ?? 0;
+    },
+    endTour: (state) => {
+      state.tourActive = false;
+    },
+    setTourStep: (state, action: PayloadAction<number>) => {
+      state.tourStep = action.payload;
+    },
+    nextTourStep: (state) => {
+      state.tourStep += 1;
+    },
+    prevTourStep: (state) => {
+      if (state.tourStep > 0) state.tourStep -= 1;
     },
   },
 });
@@ -498,17 +516,61 @@ const deviceSlice = createSlice({
 });
 
 // Appointments Slice
-export type AppointmentStatus = 'pending' | 'upcoming' | 'completed';
+export type AppointmentStatus = 'pending' | 'approved_payment_pending' | 'upcoming' | 'completed' | 'cancelled';
+export type ConsultationMode = 'In-Clinic' | 'Video Call';
 
-interface Appointment {
+export interface ChatMessage {
+  id: string;
+  sender: 'patient' | 'doctor';
+  text: string;
+  timestamp: string;
+  reportAttachment?: {
+    timeframe: 'Today' | 'Last 7 Days' | 'This Month';
+    avgAngle: number;
+    maxSlouch: number;
+    totalHours: number;
+    score: number;
+    incidents: number;
+    sharedAt: string;
+  };
+}
+
+export interface SharedReport {
+  id: string;
+  timeframe: 'Today' | 'Last 7 Days' | 'This Month';
+  sharedAt: string;
+  avgAngle: number;
+  maxSlouch: number;
+  totalHours: number;
+  score: number;
+  incidents: number;
+  stabilityScore: number;
+  cervicalTorque: number;
+}
+
+export interface Appointment {
   id: string;
   doctorName: string;
   specialty: string;
   hospital: string;
+  location?: string;
   date: string;
   time: string;
   status: AppointmentStatus;
   fee: string;
+  mode: ConsultationMode;
+  consultationType: string;
+  notes?: string;
+  meetingUrl?: string;
+  cancellationReason?: string;
+  
+  // Advance Payment & Consultation Workspace
+  advancePaid?: boolean;
+  advanceFeeAmount?: number;
+  advanceTransactionId?: string;
+  advancePaidAt?: string;
+  chatMessages?: ChatMessage[];
+  sharedReports?: SharedReport[];
 }
 
 const appointmentsSlice = createSlice({
@@ -518,38 +580,91 @@ const appointmentsSlice = createSlice({
       {
         id: '1',
         doctorName: 'Dr. Rahul Sharma',
-        specialty: 'Orthopedic',
-        hospital: 'Apollo Hospital',
-        date: new Date().toISOString(),
+        specialty: 'Orthopedic Spine Specialist',
+        hospital: 'Apollo Spine & Rehab Center',
+        location: 'Building B, Floor 3, Suite 302, Apollo Healthcare',
+        date: new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0],
         time: '10:00 AM',
-        status: 'upcoming',
-        fee: '₹1200'
+        status: 'upcoming' as AppointmentStatus,
+        fee: '₹1200',
+        mode: 'In-Clinic' as ConsultationMode,
+        consultationType: 'Postural Assessment',
+        notes: 'Follow-up on lumbar strain & forward head posture review.',
+        advancePaid: true,
+        advanceFeeAmount: 200,
+        advanceTransactionId: 'TXN-884190',
+        advancePaidAt: new Date(Date.now() - 3600000).toISOString(),
+        chatMessages: [
+          {
+            id: 'm1',
+            sender: 'doctor',
+            text: 'Hello! Your appointment is confirmed. Please share your recent posture diagnostic report before our session so I can review your spine trends.',
+            timestamp: '10:15 AM'
+          }
+        ],
+        sharedReports: []
       },
       {
         id: '2',
         doctorName: 'Dr. Priya Verma',
-        specialty: 'Physiotherapist',
-        hospital: 'Fortis Clinic',
-        date: new Date(Date.now() - 86400000 * 2).toISOString(),
+        specialty: 'Senior Physiotherapist',
+        hospital: 'Fortis Spine & Posture Clinic',
+        location: 'Tele-Consultation Room #4',
+        date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
         time: '02:30 PM',
-        status: 'completed',
-        fee: '₹800'
+        status: 'approved_payment_pending' as AppointmentStatus,
+        fee: '₹800',
+        mode: 'Video Call' as ConsultationMode,
+        consultationType: 'Spine Rehabilitation',
+        notes: 'Virtual review of ergonomics & neck stretching routine.',
+        meetingUrl: 'https://meet.google.com/ais-posture-rehab',
+        advancePaid: false,
+        advanceFeeAmount: 200,
+        chatMessages: [],
+        sharedReports: []
       },
       {
         id: '3',
         doctorName: 'Dr. Amit Patel',
-        specialty: 'Neurologist',
-        hospital: 'Max Healthcare',
-        date: new Date(Date.now() + 86400000).toISOString(),
+        specialty: 'Neuro-Muscular Specialist',
+        hospital: 'Max Healthcare Institute',
+        location: 'Max Spine Care Wing, OPD #12',
+        date: new Date(Date.now() + 86400000 * 4).toISOString().split('T')[0],
         time: '11:15 AM',
-        status: 'pending',
-        fee: '₹2000'
+        status: 'pending' as AppointmentStatus,
+        fee: '₹2000',
+        mode: 'In-Clinic' as ConsultationMode,
+        consultationType: 'Ergonomic Review',
+        notes: 'Awaiting confirmation from specialist for thoracic tension evaluation.',
+        advancePaid: false,
+        advanceFeeAmount: 200,
+        chatMessages: [],
+        sharedReports: []
+      },
+      {
+        id: '4',
+        doctorName: 'Dr. Sneha Rao',
+        specialty: 'Spine Ergonomics Lead',
+        hospital: 'Global Spine & Joint Care',
+        location: 'Consultation Suite 5, Global Center',
+        date: new Date(Date.now() - 86400000 * 3).toISOString().split('T')[0],
+        time: '04:00 PM',
+        status: 'completed' as AppointmentStatus,
+        fee: '₹1500',
+        mode: 'In-Clinic' as ConsultationMode,
+        consultationType: 'Postural Assessment',
+        notes: 'Completed initial thoracic alignment baseline check.',
+        advancePaid: true,
+        advanceFeeAmount: 200,
+        advanceTransactionId: 'TXN-773120',
+        chatMessages: [],
+        sharedReports: []
       }
     ] as Appointment[] 
   },
   reducers: {
     addAppointment: (state, action: PayloadAction<Appointment>) => {
-      state.list.push(action.payload);
+      state.list.unshift(action.payload);
     },
     removeAppointment: (state, action: PayloadAction<string>) => {
       state.list = state.list.filter(a => a.id !== action.payload);
@@ -557,6 +672,88 @@ const appointmentsSlice = createSlice({
     updateAppointment: (state, action: PayloadAction<Appointment>) => {
       const index = state.list.findIndex(a => a.id === action.payload.id);
       if (index !== -1) state.list[index] = action.payload;
+    },
+    rescheduleAppointment: (state, action: PayloadAction<{ id: string; date: string; time: string }>) => {
+      const appointment = state.list.find(a => a.id === action.payload.id);
+      if (appointment) {
+        appointment.date = action.payload.date;
+        appointment.time = action.payload.time;
+      }
+    },
+    cancelAppointment: (state, action: PayloadAction<{ id: string; reason?: string }>) => {
+      const appointment = state.list.find(a => a.id === action.payload.id);
+      if (appointment) {
+        appointment.status = 'cancelled';
+        if (action.payload.reason) {
+          appointment.cancellationReason = action.payload.reason;
+        }
+      }
+    },
+    approveAppointment: (state, action: PayloadAction<{ id: string }>) => {
+      const appointment = state.list.find(a => a.id === action.payload.id);
+      if (appointment) {
+        appointment.status = 'approved_payment_pending';
+        if (!appointment.advanceFeeAmount) appointment.advanceFeeAmount = 200;
+      }
+    },
+    payAdvanceFee: (state, action: PayloadAction<{ id: string; transactionId: string; amount?: number }>) => {
+      const appointment = state.list.find(a => a.id === action.payload.id);
+      if (appointment) {
+        appointment.status = 'upcoming';
+        appointment.advancePaid = true;
+        appointment.advanceFeeAmount = action.payload.amount || 200;
+        appointment.advanceTransactionId = action.payload.transactionId;
+        appointment.advancePaidAt = new Date().toISOString();
+        
+        // Add welcome message from doctor upon confirmation
+        if (!appointment.chatMessages) appointment.chatMessages = [];
+        appointment.chatMessages.push({
+          id: 'msg-' + Date.now(),
+          sender: 'doctor',
+          text: `Payment of ₹${action.payload.amount || 200} received! Your slot is officially confirmed. Feel free to chat with me here or share your recent posture diagnostic report before our appointment.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+      }
+    },
+    addChatMessage: (state, action: PayloadAction<{ appointmentId: string; message: ChatMessage }>) => {
+      const appointment = state.list.find(a => a.id === action.payload.appointmentId);
+      if (appointment) {
+        if (!appointment.chatMessages) appointment.chatMessages = [];
+        appointment.chatMessages.push(action.payload.message);
+      }
+    },
+    shareReportWithDoctor: (state, action: PayloadAction<{ appointmentId: string; report: SharedReport }>) => {
+      const appointment = state.list.find(a => a.id === action.payload.appointmentId);
+      if (appointment) {
+        if (!appointment.sharedReports) appointment.sharedReports = [];
+        appointment.sharedReports.unshift(action.payload.report);
+
+        // Add message in chat stream too
+        if (!appointment.chatMessages) appointment.chatMessages = [];
+        appointment.chatMessages.push({
+          id: 'msg-' + Date.now(),
+          sender: 'patient',
+          text: `Shared Posture Diagnostic Report (${action.payload.report.timeframe})`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          reportAttachment: {
+            timeframe: action.payload.report.timeframe,
+            avgAngle: action.payload.report.avgAngle,
+            maxSlouch: action.payload.report.maxSlouch,
+            totalHours: action.payload.report.totalHours,
+            score: action.payload.report.score,
+            incidents: action.payload.report.incidents,
+            sharedAt: action.payload.report.sharedAt
+          }
+        });
+
+        // Doctor automated reply
+        appointment.chatMessages.push({
+          id: 'msg-' + (Date.now() + 1),
+          sender: 'doctor',
+          text: `Thank you! I received your ${action.payload.report.timeframe} posture report. I am analyzing your spine curvature trends and biomechanical parameters on my clinical dashboard now.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+      }
     },
     setAppointmentStatus: (state, action: PayloadAction<{ id: string; status: AppointmentStatus }>) => {
       const appointment = state.list.find(a => a.id === action.payload.id);
@@ -603,10 +800,10 @@ const syncSlice = createSlice({
 });
 
 export const { login, logout, setAuthLoading, updateUser } = authSlice.actions;
-export const { setChatOpen } = uiSlice.actions;
+export const { setChatOpen, startTour, endTour, setTourStep, nextTourStep, prevTourStep } = uiSlice.actions;
 export const { updateAngle, tickSessionStats, resetSessionStats, setThresholds, recalibrateBaseline, setIsSimulating, setPostureHistory, setIsRecordingSession, setAutoRecordEnabled, checkDailyReset } = postureSlice.actions;
 export const { setDeviceStatus, setHasPaired, setSkippedSetup, updateBattery, unpairDevice } = deviceSlice.actions;
-export const { addAppointment, removeAppointment, updateAppointment, setAppointmentStatus } = appointmentsSlice.actions;
+export const { addAppointment, removeAppointment, updateAppointment, setAppointmentStatus, rescheduleAppointment, cancelAppointment, approveAppointment, payAdvanceFee, addChatMessage, shareReportWithDoctor } = appointmentsSlice.actions;
 export const { setOnlineStatus, addToSyncQueue, removeFromSyncQueue, clearSyncQueue } = syncSlice.actions;
 
 const appReducer = combineReducers({

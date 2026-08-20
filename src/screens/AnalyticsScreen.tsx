@@ -841,7 +841,7 @@ export const AnalyticsScreen: React.FC = () => {
           </div>
 
           {/* INTERROGATE REPORT WITH GEMINI */}
-          <div className="pt-2">
+          <div data-tour="pdf-export" className="pt-2">
             <button 
               onClick={handleAskGemini}
               className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-4 px-6 rounded-[24px] flex items-center justify-center gap-2.5 text-xs font-black uppercase tracking-[0.15em] shadow-lg shadow-indigo-100 active:scale-[0.98] transition-all border border-white/10"

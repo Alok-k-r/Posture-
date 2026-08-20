@@ -1027,7 +1027,11 @@ export class LocalModelService {
         ? "Perform scapular wall slides and a pectoral doorway stretch to alleviate upper trap tightness."
         : "Excellent paraspinal balance. Take short standing breaks every 45 minutes to maintain spinal nutrition.";
 
-      if (totalBreaks > 0) {
+      const calculatedBreaks = Math.floor(safeGoodSec / 3600);
+      const avgBreakSec = calculatedBreaks > 0 ? 55 : 0;
+      const avgPostResilience = Math.min(100, Math.round(focusPreservationIndex * 0.95));
+
+      if (calculatedBreaks > 0) {
         if (avgBreakSec < 45) {
           dailyRecommendation += ` [Analysis] Rest breaks average ${avgBreakSec}s (slightly brief). Aim for 60-90s to let paraspinal lactic acid disperse fully.`;
         } else if (avgPostResilience > 75) {

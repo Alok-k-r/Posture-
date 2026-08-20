@@ -173,7 +173,7 @@ export const ThresholdScreen: React.FC = () => {
       </div>
 
       {/* Recalibrate Baseline Card */}
-      <div className="glass p-6 rounded-[40px] shadow-premium space-y-5 border-emerald-100/50">
+      <div data-tour="recalibrate-baseline" className="glass p-6 rounded-[40px] shadow-premium space-y-5 border-emerald-100/50">
         <div className="flex justify-between items-start">
           <div className="space-y-1">
             <h3 className="text-base font-black text-slate-800 tracking-tight">Recalibrate Baseline</h3>
@@ -200,7 +200,7 @@ export const ThresholdScreen: React.FC = () => {
       </div>
 
       {/* Alert Configuration */}
-      <div className="glass p-8 rounded-[48px] shadow-premium space-y-8">
+      <div data-tour="alert-config" className="glass p-8 rounded-[48px] shadow-premium space-y-8">
         <div className="flex items-center gap-3">
           <Bell size={20} className="text-indigo-500" />
           <h3 className="text-base font-black text-slate-800 tracking-tight">Alert Intelligence</h3>

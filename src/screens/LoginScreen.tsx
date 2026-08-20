@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { useDispatch } from 'react-redux';
-import { login, logout } from '../store/store';
-import { Mail, Lock, LogIn, Shield, User, Ruler, Scale, Calendar, ArrowLeft, AlertCircle } from 'lucide-react';
+import { login, logout, startTour } from '../store/store';
+import { Mail, Lock, LogIn, Shield, User, Ruler, Scale, Calendar, ArrowLeft, AlertCircle, Bot, Sparkles, CheckSquare, Square } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { auth, googleProvider, db, handleFirestoreError, OperationType, isMockFirebase } from '../lib/firebase';
 import { 
@@ -35,6 +35,7 @@ export const LoginScreen: React.FC = () => {
   
   const [view, setView] = useState<'login' | 'register' | 'details' | 'verification-pending'>('login');
   const [isInIframe, setIsInIframe] = useState(false);
+  const [startTourChecked, setStartTourChecked] = useState(true);
   
   // Login State
   const [email, setEmail] = useState('rahul@posturecare.health');
@@ -239,6 +240,9 @@ export const LoginScreen: React.FC = () => {
           weight: 74,
           hasAcceptedTerms: hasAcceptedLocal
         }));
+        if (startTourChecked) {
+          dispatch(startTour(0));
+        }
         setIsLoading(false);
         navigate('/');
         return;
@@ -1117,12 +1121,48 @@ export const LoginScreen: React.FC = () => {
         photo: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Guest',
         hasAcceptedTerms: hasAcceptedLocal
       }));
+      if (startTourChecked) {
+        dispatch(startTour(0));
+      }
       setIsLoading(false);
       navigate('/');
     } catch (error) {
        console.warn('Demo Guest Sign In Error:', error);
        setIsLoading(false);
      }
+  };
+
+  // Direct Tour Launcher
+  const handleStartTourDirectly = async () => {
+    setIsLoading(true);
+    try {
+      localStorage.setItem('login_mode', 'demo');
+      try {
+        await signInAnonymously(auth);
+      } catch (err: any) {
+        console.warn('Firebase Anonymous Auth failed or bypassed:', err?.message || err);
+      }
+      const uid = auth.currentUser?.uid || 'demo-123';
+      const hasAcceptedLocal = localStorage.getItem(`terms_accepted_${uid}`) === 'true' ||
+                               localStorage.getItem(`terms_accepted_fallback_${uid}`) === 'true' ||
+                               localStorage.getItem('terms_accepted_demo-123') === 'true';
+      dispatch(login({
+        id: uid, 
+        name: 'Rahul',
+        email: 'rahul@posturecare.health',
+        photo: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Rahul',
+        age: 32,
+        height: 178,
+        weight: 74,
+        hasAcceptedTerms: hasAcceptedLocal
+      }));
+      dispatch(startTour(0));
+      setIsLoading(false);
+      navigate('/');
+    } catch (err) {
+      console.warn('Start tour directly error:', err);
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -1246,8 +1286,48 @@ export const LoginScreen: React.FC = () => {
         {/* Render View 1: LOGIN */}
         {view === 'login' && (
           <div>
+            {/* Interactive App Tour Box / Checklist */}
+            <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 p-4 rounded-2xl mb-5 border border-emerald-200/80 shadow-soft">
+              <div className="flex items-center justify-between gap-3 mb-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-500 text-white flex items-center justify-center font-bold shadow-sm">
+                    <Sparkles size={16} />
+                  </div>
+                  <div>
+                    <span className="text-xs font-black text-slate-800 block leading-tight">First Time Here?</span>
+                    <span className="text-[10px] text-slate-500 font-bold">Guided Posture Assistant Tour</span>
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-emerald-200/80 text-emerald-800">
+                  Interactive
+                </span>
+              </div>
+
+              <label className="flex items-center gap-3 p-3 rounded-xl bg-white border border-emerald-100 cursor-pointer hover:bg-emerald-50/50 transition-colors shadow-xs">
+                <input
+                  type="checkbox"
+                  checked={startTourChecked}
+                  onChange={(e) => setStartTourChecked(e.target.checked)}
+                  className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                />
+                <span className="text-xs font-black text-slate-700">
+                  Start App Tour upon enter
+                </span>
+              </label>
+
+              <button
+                type="button"
+                onClick={handleStartTourDirectly}
+                disabled={isLoading}
+                className="w-full mt-2.5 py-3 px-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-black rounded-xl shadow-md flex items-center justify-center gap-2 transition-all active:scale-95"
+              >
+                <Bot size={16} className="text-emerald-400 animate-bounce" />
+                <span>Start App Tour Now (Demo)</span>
+              </button>
+            </div>
+
             {/* Demo Box */}
-            <div className="bg-greenPale p-4 rounded-2xl mb-6 border border-green100 text-center">
+            <div className="bg-greenPale p-3.5 rounded-2xl mb-5 border border-green100 text-center">
               <p className="text-xs text-greenDark font-medium">🔑 Demo credentials pre-filled — just tap Sign In</p>
             </div>
 

@@ -345,3 +345,4 @@ export const SessionService = {
     return this.fetchUnifiedSessions(activeUid);
   }
 };
+

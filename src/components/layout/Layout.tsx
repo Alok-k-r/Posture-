@@ -2,6 +2,7 @@ import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { TabBar } from './TabBar';
 import { ChatAssistant } from '../chat/ChatAssistant';
+import { AppTourModal } from '../tour/AppTourModal';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store/store';
 import { AlertCircle, Bluetooth, ArrowRight } from 'lucide-react';
@@ -20,6 +21,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     return (
       <main className="min-h-screen w-screen bg-white overflow-hidden flex flex-col">
         {children}
+        <AppTourModal />
       </main>
     );
   }
@@ -68,6 +70,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       <main className="flex-1 overflow-x-hidden">
         {children}
       </main>
+
+      <AppTourModal />
       
       {showNav && (
         <>

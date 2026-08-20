@@ -1,139 +1,149 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, updateAngle, setIsSimulating, setIsRecordingSession, resetSessionStats, setDeviceStatus, setHasPaired, addToSyncQueue, BreakRecord } from '../store/store';
-import { PostureFigure } from '../components/posture/PostureFigure';
 import { 
-  Play, 
-  Square, 
-  Info, 
-  ChevronRight, 
+  RootState, 
+  updateAngle, 
+  recalibrateBaseline, 
+  setIsSimulating, 
+  setIsRecordingSession, 
+  resetSessionStats, 
+  setThresholds, 
+  setDeviceStatus, 
+  setHasPaired 
+} from '../store/store';
+import { PostureFigure } from '../components/posture/PostureFigure';
+import { Spine3DModel } from '../components/spine/Spine3DModel';
+import { SlouchAlarmManager } from '../components/posture/SlouchAlarmManager';
+import { 
   Activity, 
-  Clock, 
   Shield, 
+  Flame, 
+  AlertCircle, 
+  ChevronRight, 
+  Clock, 
   Zap, 
-  Wind, 
-  User, 
+  Battery, 
+  Bluetooth, 
+  Volume2, 
+  VolumeX,
+  Vibrate,
   Sparkles, 
-  X, 
-  Brain, 
-  Bot, 
-  Pause, 
-  CheckCircle2, 
-  AlertOctagon, 
-  RefreshCw,
+  Calendar, 
+  Play, 
+  Pause,
   Award,
-  TrendingDown,
-  Gauge,
-  Flame
+  BookOpen,
+  ArrowUpRight,
+  RefreshCw,
+  CheckCircle2,
+  TrendingUp,
+  BrainCircuit,
+  Sliders,
+  ChevronDown,
+  Info,
+  X,
+  Target,
+  Box,
+  Timer,
+  RotateCcw,
+  Check,
+  AlertTriangle,
+  Layers,
+  BarChart2,
+  Dumbbell
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { AreaChart, Area, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, ResponsiveContainer, YAxis, Tooltip, BarChart, Bar, XAxis } from 'recharts';
 import { generatePostureSummary } from '../services/geminiService';
 import { db, auth } from '../lib/firebase';
-import { collection, addDoc, serverTimestamp, query, orderBy, limit, getDocs, where, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import Markdown from 'react-markdown';
-import { SessionService } from '../services/sessionService';
-import { LocalModelService } from '../services/localModelService';
+import { SessionService, UnifiedSession } from '../services/sessionService';
+import { LocalModelService, LocalBiomechanicalMetrics } from '../services/localModelService';
+
+interface Exercise {
+  id: string;
+  name: string;
+  target: string;
+  durationSec: number;
+  description: string;
+  reps: string;
+  iconName: string;
+}
+
+const POSTURE_EXERCISES: Exercise[] = [
+  {
+    id: 'chin-tuck',
+    name: 'Cervical Chin Retraction',
+    target: 'Deep Neck Flexors & Suboccipitals',
+    durationSec: 30,
+    description: 'Pull your chin straight back toward your spine without tilting your head down, creating a double chin. Hold 5s.',
+    reps: '5 reps x 5 sec hold',
+    iconName: 'neck'
+  },
+  {
+    id: 'scapular-squeeze',
+    name: 'Scapular Retraction & Squeeze',
+    target: 'Rhomboids & Mid Trapezius',
+    durationSec: 45,
+    description: 'Pull shoulder blades backward and downward as if pinching a pencil between them. Breathe deeply.',
+    reps: '10 reps x 4 sec hold',
+    iconName: 'back'
+  },
+  {
+    id: 'doorway-pec',
+    name: 'Pectoral Doorway Stretch',
+    target: 'Pectoralis Major & Minor',
+    durationSec: 45,
+    description: 'Place forearms against a doorframe at 90° angles and step forward until you feel a gentle chest opening stretch.',
+    reps: '3 sets x 15 sec hold',
+    iconName: 'chest'
+  },
+  {
+    id: 'thoracic-extension',
+    name: 'Chair Thoracic Extension',
+    target: 'Thoracic Spine & Anterior Core',
+    durationSec: 40,
+    description: 'Interlace fingers behind your head and gently extend backward over the backrest of your chair.',
+    reps: '8 slow repetitions',
+    iconName: 'spine'
+  }
+];
 
 export const PostureScreen: React.FC = () => {
   const dispatch = useDispatch();
-  const device = useSelector((state: RootState) => state.device);
   const posture = useSelector((state: RootState) => state.posture);
+  const device = useSelector((state: RootState) => state.device);
   const user = useSelector((state: RootState) => state.auth.user);
-  const { angle, score, thresholds, history, isSimulating, isRecordingSession, totalSessionSeconds, goodSessionSeconds, maxFocusDuration, incidents, streak, activeBreak, breakHistory, baselineAngle } = posture;
+
+  const { 
+    angle, 
+    score, 
+    thresholds, 
+    history, 
+    isSimulating, 
+    isRecordingSession, 
+    totalSessionSeconds, 
+    goodSessionSeconds, 
+    incidents, 
+    baselineAngle
+  } = posture;
+
+  const [activeTab, setActiveTab] = useState<'realtime' | '3d' | 'biomechanics' | 'drills' | 'history'>('realtime');
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [activeAiTab, setActiveAiTab] = useState<'biomechanics' | 'markov' | 'parameters' | 'compliance'>('biomechanics');
-  const [sessions, setSessions] = useState<any[]>([]);
-
-  const [liveBreakElapsed, setLiveBreakElapsed] = useState(0);
-
-  useEffect(() => {
-    if (!activeBreak) {
-      setLiveBreakElapsed(0);
-      return;
-    }
-    const update = () => {
-      const startMs = new Date(activeBreak.startTime).getTime();
-      const elapsed = Math.max(1, Math.round((Date.now() - startMs) / 1000));
-      setLiveBreakElapsed(elapsed);
-    };
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
-  }, [activeBreak]);
-
-  const formatBreakDuration = (sec: number) => {
-    if (sec < 60) return `${sec}s`;
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return s > 0 ? `${m}m ${s}s` : `${m} min`;
-  };
-
-  const formatBreakTime = (ts: string) => {
-    try {
-      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch {
-      return '';
-    }
-  };
-
-  // Subscribe to real-time session database updates across Firestore and LocalStorage
-  useEffect(() => {
-    const activeUserId = user?.id || auth.currentUser?.uid || 'guest';
-    const unsubscribe = SessionService.subscribeToSessions(activeUserId, (fetched) => {
-      setSessions(fetched);
-    });
-    return () => unsubscribe();
-  }, [user?.id, auth.currentUser?.uid]);
-
-  // Aggregate Today's Completed Sessions + Live Active Session for Daily Milestones
-  const todayStr = new Date().toDateString();
-  const todayCompletedSessions = sessions.filter(s => {
-    if (!s.date && !s.startTime) return false;
-    return new Date(s.date || s.startTime || '').toDateString() === todayStr;
-  });
-
-  const completedTodayGoodSecs = todayCompletedSessions.reduce((acc, s) => acc + (s.goodSessionSeconds || 0), 0);
-  const completedTodayTotalSecs = todayCompletedSessions.reduce((acc, s) => acc + (s.duration || 0), 0);
-  const completedTodayMaxFocus = todayCompletedSessions.reduce((max, s) => Math.max(max, s.maxFocusStreak || s.maxFocusDuration || 0), 0);
-
-  const combinedTodayGoodSecs = completedTodayGoodSecs + (goodSessionSeconds || 0);
-  const combinedTodayTotalSecs = completedTodayTotalSecs + (totalSessionSeconds || 0);
-  const combinedTodayFocusMax = Math.max(completedTodayMaxFocus, maxFocusDuration || 0);
-  const completedSessionsCount = sessions.length;
-
-  // Compute live 5-Layer Posture Biometrics and AI Diagnostics (Layer 2 - 4)
-  const localAI = LocalModelService.recalculateAllBiomechanicalMetrics(
-    angle,
-    baselineAngle,
-    history,
-    goodSessionSeconds,
-    totalSessionSeconds,
-    incidents,
-    user ? { age: user.age, height: user.height, weight: user.weight } : undefined
-  );
-
-  const prevHistoryLengthRef = useRef(breakHistory ? breakHistory.length : 0);
-
-  useEffect(() => {
-    if (breakHistory && breakHistory.length > prevHistoryLengthRef.current) {
-      const newBreak = breakHistory[0];
-      if (newBreak && user) {
-        dispatch(addToSyncQueue({
-          id: `sync_break_${newBreak.id}`,
-          type: 'SYNC_BREAK',
-          payload: newBreak,
-          timestamp: new Date().toISOString()
-        }));
-      }
-    }
-    prevHistoryLengthRef.current = breakHistory ? breakHistory.length : 0;
-  }, [breakHistory, user, dispatch]);
-
   const [autoOscillate, setAutoOscillate] = useState(true);
+  const [showSimulator, setShowSimulator] = useState(false);
+  const [audioAlerts, setAudioAlerts] = useState(true);
+  const [recentSessions, setRecentSessions] = useState<UnifiedSession[]>([]);
+
+  // Exercise active state
+  const [activeExerciseIndex, setActiveExerciseIndex] = useState<number | null>(null);
+  const [exerciseTimer, setExerciseTimer] = useState<number>(0);
+  const [isExerciseRunning, setIsExerciseRunning] = useState<boolean>(false);
+
   const simulationDirRef = useRef(-1);
   const angleRef = useRef(angle);
 
@@ -141,7 +151,16 @@ export const PostureScreen: React.FC = () => {
     angleRef.current = angle;
   }, [angle]);
 
-  // Auto-oscillation simulation effect
+  // Load sessions
+  useEffect(() => {
+    const userId = user?.id || auth.currentUser?.uid || 'guest';
+    const unsub = SessionService.subscribeToSessions(userId, (sessions) => {
+      setRecentSessions(sessions);
+    });
+    return () => unsub();
+  }, [user?.id, auth.currentUser?.uid]);
+
+  // Auto-oscillation simulation
   useEffect(() => {
     if (!isSimulating || !autoOscillate) return;
 
@@ -150,231 +169,41 @@ export const PostureScreen: React.FC = () => {
       if (nextAngle <= 42) {
         nextAngle = 42;
         simulationDirRef.current = 1;
-      } else if (nextAngle >= 92) {
-        nextAngle = 92;
+      } else if (nextAngle >= 96) {
+        nextAngle = 96;
         simulationDirRef.current = -1;
       }
       dispatch(updateAngle(nextAngle));
-    }, 2000);
+    }, 1200);
 
     return () => clearInterval(interval);
   }, [isSimulating, autoOscillate, dispatch]);
 
-  // Auto-off simulation timer (shuts off automatically in 1 minute / 60 seconds)
+  // Exercise countdown timer
   useEffect(() => {
-    if (!isSimulating) return;
-
-    const timer = setTimeout(() => {
-      dispatch(setIsSimulating(false));
-      dispatch(setDeviceStatus(false));
-      dispatch(setHasPaired(false));
-    }, 60000);
-
-    return () => clearTimeout(timer);
-  }, [isSimulating, dispatch]);
-
-  const handleSaveSession = async () => {
-    if (!user) {
-      alert("Please login first to save your session.");
+    if (!isExerciseRunning || activeExerciseIndex === null) return;
+    if (exerciseTimer <= 0) {
+      setIsExerciseRunning(false);
       return;
     }
-    
-    if (totalSessionSeconds < 5) {
-      if (!confirm("This session is very short (< 5 seconds). Are you sure you want to save it?")) {
-        return;
-      }
-    }
 
-    setIsSaving(true);
-    const statusLabel = score >= thresholds.good ? 'Excellent' : score >= thresholds.warn ? 'Fair' : 'Poor';
+    const timer = setInterval(() => {
+      setExerciseTimer(prev => prev - 1);
+    }, 1000);
 
-    try {
-      const localKey = `posture_sessions_${user.id}`;
-      const newSessionDateStr = posture.sessionStartTime || new Date().toISOString();
-      const newSessionDay = new Date(newSessionDateStr).toDateString();
+    return () => clearInterval(timer);
+  }, [isExerciseRunning, exerciseTimer, activeExerciseIndex]);
 
-      const existingLocal = JSON.parse(localStorage.getItem(localKey) || '[]');
-      const sameDayIdx = existingLocal.findIndex((s: any) => new Date(s.date).toDateString() === newSessionDay);
-
-      let sessionData;
-      if (sameDayIdx !== -1) {
-        // COMBINE SESSIONS of the same day
-        const existing = existingLocal[sameDayIdx];
-        const totalDur = existing.duration + totalSessionSeconds;
-        const mergedScore = Math.round(((existing.score * existing.duration) + (score * totalSessionSeconds)) / totalDur);
-        sessionData = {
-          ...existing,
-          endTime: new Date().toISOString(),
-          duration: totalDur,
-          score: mergedScore,
-          slouches: (existing.slouches || 0) + (incidents || 0),
-          goodSessionSeconds: (existing.goodSessionSeconds || 0) + (posture.goodSessionSeconds || 0),
-          warnSessionSeconds: (existing.warnSessionSeconds || 0) + (posture.warnSessionSeconds || 0),
-          maxFocusStreak: Math.max(existing.maxFocusStreak || 0, maxFocusDuration || 0),
-          status: mergedScore >= thresholds.good ? 'Excellent' : mergedScore >= thresholds.warn ? 'Fair' : 'Poor'
-        };
-        existingLocal[sameDayIdx] = sessionData;
-      } else {
-        sessionData = {
-          id: 'local-' + Date.now(),
-          date: newSessionDateStr,
-          startTime: newSessionDateStr,
-          endTime: new Date().toISOString(),
-          duration: totalSessionSeconds,
-          score: score,
-          slouches: incidents || 0,
-          goodSessionSeconds: posture.goodSessionSeconds || 0,
-          warnSessionSeconds: posture.warnSessionSeconds || 0,
-          maxFocusStreak: maxFocusDuration,
-          status: statusLabel,
-        };
-        existingLocal.unshift(sessionData);
-      }
-      localStorage.setItem(localKey, JSON.stringify(existingLocal));
-
-      // Trigger On-Device Model Tuning & Learning Cycle (Layer 4)
-      const localReportData = LocalModelService.recalculateAllBiomechanicalMetrics(
-        angle,
-        baselineAngle,
-        history,
-        goodSessionSeconds,
-        totalSessionSeconds,
-        incidents,
-        user ? { age: user.age, height: user.height, weight: user.weight } : undefined
-      );
-      LocalModelService.saveSessionSummary({
-        timestamp: sessionData.date,
-        durationSeconds: totalSessionSeconds,
-        grade: localReportData.sessionGrade,
-        qualityScore: localReportData.sessionQualityScore,
-        avgLoadLbs: localReportData.averageThoracicLoadLbs,
-        peakLoadLbs: localReportData.peakThoracicLoadLbs,
-        fatigueScore: localReportData.fatigueScore,
-        stabilityScore: localReportData.stabilityScore,
-        complianceRate: localReportData.dailyComplianceRate,
-      });
-
-      if (auth.currentUser) {
-        const sessionsRef = collection(db, 'users', auth.currentUser.uid, 'sessions');
-        
-        // Find existing same day session in Firestore to merge
-        const todayStart = new Date(newSessionDateStr);
-        todayStart.setHours(0,0,0,0);
-        const todayEnd = new Date(newSessionDateStr);
-        todayEnd.setHours(23,59,59,999);
-        
-        const q = query(
-          sessionsRef,
-          where('date', '>=', todayStart.toISOString()),
-          where('date', '<=', todayEnd.toISOString()),
-          limit(1)
-        );
-        const snapshot = await getDocs(q);
-        
-        if (!snapshot.empty) {
-          const docRef = snapshot.docs[0].ref;
-          const existing = snapshot.docs[0].data();
-          const totalDur = existing.duration + totalSessionSeconds;
-          const mergedScore = Math.round(((existing.score * existing.duration) + (score * totalSessionSeconds)) / totalDur);
-          await updateDoc(docRef, {
-            duration: totalDur,
-            score: mergedScore,
-            slouches: (existing.slouches || 0) + (incidents || 0),
-            goodSessionSeconds: (existing.goodSessionSeconds || 0) + (posture.goodSessionSeconds || 0),
-            warnSessionSeconds: (existing.warnSessionSeconds || 0) + (posture.warnSessionSeconds || 0),
-            maxFocusStreak: Math.max(existing.maxFocusStreak || 0, maxFocusDuration || 0),
-            status: mergedScore >= thresholds.good ? 'Excellent' : mergedScore >= thresholds.warn ? 'Fair' : 'Poor',
-            endTime: new Date().toISOString()
-          });
-        } else {
-          await addDoc(sessionsRef, {
-            date: sessionData.date,
-            startTime: sessionData.startTime,
-            endTime: sessionData.endTime,
-            duration: totalSessionSeconds,
-            score: score,
-            slouches: incidents || 0,
-            goodSessionSeconds: posture.goodSessionSeconds || 0,
-            warnSessionSeconds: posture.warnSessionSeconds || 0,
-            maxFocusStreak: maxFocusDuration,
-            status: statusLabel,
-            timestamp: serverTimestamp()
-          });
-        }
-      }
-
-      // Sync and update unified session cache immediately
-      SessionService.fetchUnifiedSessions(user?.id || auth.currentUser?.uid).catch(err => {
-        console.warn('Session refresh post-save notice:', err);
-      });
-
-      dispatch(setIsRecordingSession(false));
-      dispatch(resetSessionStats());
-      alert("🎉 Posture session saved and combined successfully! Your personalized Posture AI model has been tuned on-device based on this session.");
-    } catch (error: any) {
-      console.error("Failed to save session:", error);
-      alert("Sync fallback active: Session saved locally. It will upload once network connection is restored.");
-      dispatch(setIsRecordingSession(false));
-      dispatch(resetSessionStats());
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleGenerateSummary = async () => {
-    setIsSummarizing(true);
-    try {
-      const list: any[] = [];
-      if (user) {
-        try {
-          const localKey = `posture_sessions_${user.id}`;
-          const localSessions = JSON.parse(localStorage.getItem(localKey) || '[]');
-          list.push(...localSessions);
-        } catch (localErr) {
-          console.error('Error loading local sessions for summary:', localErr);
-        }
-      }
-
-      if (auth.currentUser) {
-        try {
-          const q = query(
-            collection(db, 'users', auth.currentUser.uid, 'sessions'),
-            orderBy('date', 'desc'),
-            limit(15)
-          );
-          const querySnapshot = await getDocs(q);
-          querySnapshot.forEach((doc) => {
-            const data = doc.data();
-            const isDuplicate = list.some(s => s.id === doc.id || (s.date === data.date && s.duration === data.duration));
-            if (!isDuplicate) {
-              list.push({ id: doc.id, ...data });
-            }
-          });
-        } catch (err) {
-          console.error('Error fetching Firestore sessions for summary:', err);
-        }
-      }
-
-      list.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-      
-      // Compile Layer 4 pre-digested explainable report to feed Layer 5
-      const localReport = LocalModelService.compileLocalAIReport();
-      const result = await generatePostureSummary(history, score, list, localReport);
-      setSummary(result);
-    } catch (error) {
-      console.error('Summary generation failed:', error);
-    } finally {
-      setIsSummarizing(false);
-    }
-  };
-
-  const getStatusColor = (val: number) => {
-    if (val >= thresholds.good) return '#22C55E';
-    if (val >= thresholds.warn) return '#F97316';
-    return '#EF4444';
-  };
-
-  const chartData = history.slice().reverse().map((a, i) => ({ index: i, angle: a }));
+  // Biomechanical computations
+  const localAI: LocalBiomechanicalMetrics = LocalModelService.recalculateAllBiomechanicalMetrics(
+    angle,
+    baselineAngle,
+    history,
+    goodSessionSeconds,
+    totalSessionSeconds,
+    incidents,
+    user ? { age: user.age, height: user.height, weight: user.weight } : undefined
+  );
 
   const formatDuration = (totalSecs: number) => {
     if (!totalSecs || totalSecs === 0) return '0s';
@@ -388,1087 +217,684 @@ export const PostureScreen: React.FC = () => {
     return `${h}h ${m}m ${s}s`;
   };
 
-  const getShoulderBalance = (s: number) => {
-    if (s >= thresholds.good) {
-      const sym = 95 + Math.round((s - thresholds.good) * 0.25);
-      return { value: `Stable (${Math.min(100, sym)}%)`, color: 'text-emerald-500' };
-    } else if (s >= thresholds.warn) {
-      const sym = 80 + Math.round((s - thresholds.warn) * 1.0);
-      return { value: `Mild Tilt (${sym}%)`, color: 'text-orange' };
-    } else {
-      const sym = 50 + Math.round((s - 45) * 1.5);
-      return { value: `Uneven (${Math.min(79, Math.max(30, sym))}% Symmetry)`, color: 'text-rose-500' };
+  const getStatusColor = (val: number) => {
+    if (val >= thresholds.good) return '#10B981';
+    if (val >= thresholds.warn) return '#F59E0B';
+    return '#EF4444';
+  };
+
+  const isOptimal = angle >= thresholds.good;
+  const isWarn = angle >= thresholds.warn && angle < thresholds.good;
+
+  const statusLabel = isOptimal ? 'Optimal Alignment' : isWarn ? 'Mild Slouch' : 'Significant Slouch';
+  const statusColorClass = isOptimal 
+    ? 'text-emerald-600 bg-emerald-50 border-emerald-200' 
+    : isWarn 
+    ? 'text-amber-600 bg-amber-50 border-amber-200' 
+    : 'text-rose-600 bg-rose-50 border-rose-200';
+
+  const handleSaveSession = async () => {
+    if (totalSessionSeconds <= 0) {
+      alert("No posture data recorded in this session yet.");
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const sessionPayload = {
+        date: new Date().toISOString(),
+        duration: totalSessionSeconds,
+        goodSessionSeconds: goodSessionSeconds || 0,
+        score: Math.round(score),
+        slouches: incidents || 0,
+        baselineAngle: baselineAngle || 90,
+        averageAngle: Math.round(history.length > 0 ? history.reduce((a, b) => a + b, 0) / history.length : angle),
+        status: (isOptimal ? 'Excellent' : isWarn ? 'Fair' : 'Poor') as 'Excellent' | 'Fair' | 'Poor'
+      };
+
+      const userId = user?.id || auth.currentUser?.uid || 'guest';
+      const existing = await SessionService.fetchUnifiedSessions(userId);
+      const newSession: UnifiedSession = {
+        id: `session-${Date.now()}`,
+        date: sessionPayload.date,
+        duration: sessionPayload.duration,
+        score: sessionPayload.score,
+        slouches: sessionPayload.slouches,
+        goodSessionSeconds: sessionPayload.goodSessionSeconds,
+        warnSessionSeconds: sessionPayload.duration - sessionPayload.goodSessionSeconds,
+        status: sessionPayload.status,
+        avgLoadLbs: localAI.upperBackStrainLbs,
+        peakLoadLbs: Math.round(localAI.upperBackStrainLbs * 1.3),
+        fatigueScore: localAI.fatigueScore,
+        stabilityScore: localAI.stabilityScore,
+        complianceRate: localAI.recoveryEfficiency,
+        source: 'local'
+      };
+
+      SessionService.updateLocalStorageCache(userId, [newSession, ...existing]);
+
+      if (auth.currentUser) {
+        try {
+          await addDoc(collection(db, 'users', auth.currentUser.uid, 'sessions'), {
+            ...newSession,
+            timestamp: serverTimestamp()
+          });
+        } catch (e) {
+          console.warn('Firestore sync note:', e);
+        }
+      }
+
+      dispatch(setIsRecordingSession(false));
+      dispatch(resetSessionStats());
+      alert("🎉 Posture session saved successfully!");
+    } catch (error: any) {
+      console.error("Failed to save session:", error);
+      dispatch(setIsRecordingSession(false));
+      dispatch(resetSessionStats());
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const getFatigueRisk = (hist: number[], currentScore: number) => {
-    const poorCount = hist.filter(h => h < thresholds.warn).length;
-    const ratio = hist.length > 0 ? poorCount / hist.length : (currentScore < thresholds.warn ? 0.6 : 0.1);
-
-    if (ratio < 0.15) {
-      return { value: 'Low Risk', color: 'text-emerald-500' };
-    } else if (ratio < 0.45) {
-      return { value: 'Medium Risk', color: 'text-orange' };
-    } else {
-      return { value: 'High Risk', color: 'text-rose-500' };
+  const handleGenerateSummary = async () => {
+    setIsSummarizing(true);
+    try {
+      const localReport = LocalModelService.compileLocalAIReport();
+      const result = await generatePostureSummary(history, score, recentSessions, localReport);
+      setSummary(result);
+    } catch (error) {
+      console.error('Summary generation failed:', error);
+    } finally {
+      setIsSummarizing(false);
     }
   };
 
-  const shoulder = getShoulderBalance(score);
-  const fatigue = getFatigueRisk(history, score);
-
-  const metrics = [
-    { label: 'Shoulder Balance', value: shoulder.value, icon: Shield, color: shoulder.color },
-    { label: 'Sitting Duration', value: formatDuration(totalSessionSeconds), icon: Clock, color: 'text-orange' },
-    { label: 'Fatigue Risk', value: fatigue.value, icon: Activity, color: fatigue.color },
-    { label: 'Focus Max Streak', value: formatDuration(maxFocusDuration), icon: (props: any) => <Zap size={14} {...props} />, color: 'text-purple-500' },
-    { label: 'Slouch Incidents', value: `${incidents || 0} times`, icon: AlertOctagon, color: 'text-rose-500' },
-  ];
-
-  // Dynamic Sitting Timeline Events array based on session variables
-  const getTimelineEvents = () => {
-    const list = [];
-    // Start of session
-    list.push({
-      time: '00:00',
-      title: 'Biometric Stream Initialized',
-      desc: 'S-Curve calibration successfully activated. Monitoring raw spinal inclination angle in real time.',
-      icon: Activity,
-      color: 'text-indigo-600',
-      bg: 'bg-indigo-50'
-    });
-
-    if (totalSessionSeconds > 10) {
-      list.push({
-        time: '+00:10',
-        title: 'Vertebral Baseline Locked',
-        desc: `Angle calibrated at ${posture.baselineAngle}° baseline. Paraspinal envelope defined.`,
-        icon: Shield,
-        color: 'text-emerald-600',
-        bg: 'bg-emerald-50'
-      });
-    }
-
-    if (incidents > 0) {
-      list.push({
-        time: 'Slouch Event',
-        title: `${incidents} Slouch Incident(s) Logged`,
-        desc: 'Paravertebral muscles relaxed. System issued micro-vibration audio alert.',
-        icon: AlertOctagon,
-        color: 'text-rose-500',
-        bg: 'bg-rose-50'
-      });
-    }
-
-    if (maxFocusDuration > 30) {
-      list.push({
-        time: 'Endurance Spike',
-        title: 'Uptrending Muscle Endurance',
-        desc: `Continuous upright posture held for over ${formatDuration(maxFocusDuration)}. Training slow-twitch back fibers.`,
-        icon: Zap,
-        color: 'text-purple-600',
-        bg: 'bg-purple-50'
-      });
-    }
-
-    if (!isRecordingSession && totalSessionSeconds > 0) {
-      list.push({
-        time: 'Rest Break',
-        title: 'Postural Rest Break',
-        desc: 'Session paused. Paraspinal muscles entering nutrient-recharging recovery mode.',
-        icon: Wind,
-        color: 'text-amber-500',
-        bg: 'bg-amber-50'
-      });
-    }
-
-    return list;
+  const startExercise = (index: number) => {
+    setActiveExerciseIndex(index);
+    setExerciseTimer(POSTURE_EXERCISES[index].durationSec);
+    setIsExerciseRunning(true);
   };
 
-  // Gamified Milestones/Badges system state calculated based on current day
-  const todaySessionRecordedCount = todayCompletedSessions.length + (totalSessionSeconds > 0 ? 1 : 0);
-
-  const mockMilestones = [
-    { 
-      id: 'guardian', 
-      title: 'Spine Guardian', 
-      desc: 'Maintain ≥80% score for 5 mins today', 
-      target: 300, 
-      current: combinedTodayGoodSecs, 
-      unlocked: combinedTodayGoodSecs >= 300, 
-      icon: Shield, 
-      color: 'text-emerald-500',
-      isTime: true
-    },
-    { 
-      id: 'resilience', 
-      title: 'Streak Champion', 
-      desc: 'Log a 3-day posture streak', 
-      target: 3, 
-      current: streak.current, 
-      unlocked: streak.current >= 3, 
-      icon: Flame, 
-      color: 'text-orange',
-      isTime: false
-    },
-    { 
-      id: 'pioneer', 
-      title: 'First Stance', 
-      desc: 'Log a session today', 
-      target: 1, 
-      current: todaySessionRecordedCount, 
-      unlocked: todaySessionRecordedCount >= 1, 
-      icon: Award, 
-      color: 'text-indigo-600',
-      isTime: false
-    },
-    { 
-      id: 'focus', 
-      title: 'Deep Focus Master', 
-      desc: 'Hold 120s focus streak today', 
-      target: 120, 
-      current: combinedTodayFocusMax, 
-      unlocked: combinedTodayFocusMax >= 120, 
-      icon: Zap, 
-      color: 'text-purple-500',
-      isTime: true
-    },
-  ];
+  const chartData = history.slice(0, 30).reverse().map((a, i) => ({
+    time: `${i}s`,
+    angle: a
+  }));
 
   return (
-    <div className="min-h-screen bg-transparent p-4 sm:p-6 lg:p-8 space-y-8 pb-32 relative z-10 max-w-7xl mx-auto">
-      {/* Telemetry Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-        <div className="space-y-1 text-left">
-          <div className="flex items-center gap-2.5">
-            <h2 className="text-2xl font-black text-slate-800 tracking-tight">Biometric Cockpit</h2>
-            <span className="relative flex h-2 w-2">
-              <span className={cn(
-                "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-                isRecordingSession ? "bg-rose-400" : "bg-slate-400"
-              )}></span>
-              <span className={cn(
-                "relative inline-flex rounded-full h-2 w-2",
-                isRecordingSession ? "bg-rose-500" : "bg-slate-500"
-              )}></span>
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-            <span>Biometric Stream v2.8</span>
-            <span className="text-slate-200 font-normal">•</span>
-            <span className="text-slate-500 font-mono">Live: {angle}°</span>
-            <span className="text-slate-200 font-normal">•</span>
-            <span>{isRecordingSession ? "Active Logging" : "Standby"}</span>
-          </div>
+    <div className="space-y-6 max-w-5xl mx-auto pb-32 px-4 sm:px-6 pt-2">
+      {/* Background Slouch Audio/Haptic Monitor */}
+      <SlouchAlarmManager />
+
+      {/* Top Header Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-100">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+            Live Posture Cockpit
+          </h1>
+          <p className="text-xs font-semibold text-slate-500 mt-0.5">
+            Biometric stance telemetry, 3D anatomical twin & clinical ergonomics
+          </p>
         </div>
 
-        {/* Compact telemetry badge */}
-        <div className="flex items-center gap-2.5 bg-slate-50 border border-slate-100 px-3.5 py-1.5 rounded-2xl self-start md:self-auto shadow-sm">
-          <Activity size={13} className="text-indigo-500 animate-pulse" />
-          <div className="text-left">
-            <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Real-time Stability</span>
-            <span className="text-xs font-black text-slate-700">{Math.round(score)}% Score</span>
+        <div className="flex items-center gap-2.5">
+          {/* Simulator Toggle */}
+          <button
+            onClick={() => {
+              const next = !showSimulator;
+              setShowSimulator(next);
+              if (next && !isSimulating) {
+                dispatch(setIsSimulating(true));
+                dispatch(setDeviceStatus(true));
+                dispatch(setHasPaired(true));
+              }
+            }}
+            className={cn(
+              "px-3.5 py-2 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all border shadow-soft",
+              showSimulator 
+                ? "bg-indigo-50 border-indigo-200 text-indigo-700" 
+                : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+            )}
+          >
+            <Sliders size={14} />
+            <span>{showSimulator ? "Close Sim" : "Posture Simulator"}</span>
+          </button>
+
+          {/* Alarm Audio Toggle */}
+          <button
+            onClick={() => setAudioAlerts(!audioAlerts)}
+            className={cn(
+              "p-2 rounded-2xl border shadow-soft transition-all",
+              audioAlerts ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-slate-100 border-slate-200 text-slate-400"
+            )}
+            title={audioAlerts ? "Sound alarms active" : "Sound alarms muted"}
+          >
+            {audioAlerts ? <Volume2 size={16} /> : <VolumeX size={16} />}
+          </button>
+
+          {/* Device Connection Status */}
+          <div className="flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-white border border-slate-100 shadow-soft text-xs font-bold text-slate-700">
+            <span className={cn(
+              "w-2 h-2 rounded-full",
+              isRecordingSession ? "bg-rose-500 animate-pulse" : "bg-slate-400"
+            )} />
+            <span>{isRecordingSession ? "Live Telemetry" : "Idle"}</span>
           </div>
         </div>
       </div>
 
-      {/* Symmetrical Dual-Column Dashboard Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* LEFT COLUMN: LIVE FEEDBACK & CONTROL TRYS (lg:col-span-5) */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Card 1: Live Bio-Feedback Sphere */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 rounded-[32px] shadow-soft space-y-6 flex flex-col items-center">
-            <div className="w-full flex justify-between items-center pb-2.5 border-b border-slate-50">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                <Activity size={12} className="text-emerald-500" />
-                Live Bio-Feedback Sphere
-              </span>
-              {isRecordingSession && (
-                <span className="text-[8px] font-black text-rose-500 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-full animate-pulse uppercase">
-                  REC {formatDuration(totalSessionSeconds)}
-                </span>
-              )}
-            </div>
-
-            {/* Posture Ring with exact viewBox to prevent responsive cutting */}
-            <div className="relative w-72 h-72 flex items-center justify-center my-2">
-              <svg 
-                viewBox="0 0 320 320"
-                className="absolute inset-0 w-full h-full -rotate-90"
-              >
-                <circle
-                  cx="160" cy="160" r="145"
-                  fill="none"
-                  stroke="#f1f5f9"
-                  strokeWidth="14"
-                  strokeOpacity={0.5}
-                />
-                <motion.circle
-                  cx="160" cy="160" r="145"
-                  fill="none"
-                  strokeWidth="14"
-                  strokeLinecap="round"
-                  strokeDasharray="911"
-                  initial={{ strokeDashoffset: 911 }}
-                  animate={{ 
-                    strokeDashoffset: 911 - (911 * score) / 100,
-                    stroke: getStatusColor(angle),
-                    filter: `drop-shadow(0 0 15px ${getStatusColor(angle)}44)`
-                  }}
-                  transition={{ 
-                    strokeDashoffset: { type: "spring", stiffness: 35, damping: 15 },
-                    stroke: { duration: 1.5, ease: "easeInOut" },
-                    filter: { duration: 1.5, ease: "easeInOut" }
-                  }}
-                />
-              </svg>
-
-              {/* Silhouette & Score */}
-              <div className="relative z-10 flex flex-col items-center translate-y-2">
-                <div className="relative group">
-                  <PostureFigure size={180} angle={angle} />
-                  {/* Floating Micro Score Badge */}
-                  <motion.div 
-                    key="score-badge"
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="absolute -top-2 -right-2 bg-white/95 backdrop-blur-xl border border-slate-100 shadow-premium px-3 py-1.5 rounded-2xl flex items-center gap-1.5"
-                  >
-                    <div className="w-1.5 h-1.5 rounded-full animate-ping" style={{ backgroundColor: getStatusColor(angle) }} />
-                    <span className="text-xs font-black text-slate-800 tracking-tight">{Math.round(score)}%</span>
-                  </motion.div>
-                </div>
-                <div className="mt-4 text-center">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] opacity-80">Stability Matrix</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Live feedback controls */}
-            <div className="w-full space-y-4">
-              <div className="flex justify-center">
-                <div className="px-4 py-2 bg-slate-50/80 border border-slate-100/60 rounded-full shadow-sm flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getStatusColor(angle) }} />
-                  <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest leading-none">
-                    {score >= thresholds.good ? 'Optimal State' : score >= thresholds.warn ? 'Minor Slouch' : 'Critical Failure'}
+      {/* COLLAPSIBLE SIMULATOR TRAY */}
+      <AnimatePresence>
+        {showSimulator && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="p-5 bg-indigo-50/80 border border-indigo-100 rounded-[32px] space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-black text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sliders size={14} className="text-indigo-600" />
+                    Interactive Biometric Stance Simulator
                   </span>
+                  <p className="text-[11px] text-indigo-800 font-medium">
+                    Test how the 3D twin, alarms, and thoracic strain react to different angles.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setAutoOscillate(!autoOscillate)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider border shadow-sm transition-all",
+                      autoOscillate ? "bg-emerald-500 text-white border-emerald-600" : "bg-white text-slate-700 border-slate-200"
+                    )}
+                  >
+                    {autoOscillate ? "Auto-Oscillation Active" : "Manual Slider Drag"}
+                  </button>
                 </div>
               </div>
 
-              {/* Action buttons directly inside the primary feedback card */}
-              <div className="pt-4 border-t border-slate-50 flex items-center justify-center gap-3">
+              {/* Slider */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs font-black text-slate-700">
+                  <span className="text-rose-600">Severe Slouch (30°)</span>
+                  <span className="text-indigo-900 bg-white px-3 py-0.5 rounded-lg shadow-sm border border-indigo-100">
+                    Live Angle: {Math.round(angle)}°
+                  </span>
+                  <span className="text-emerald-600">Upright Posture (100°)</span>
+                </div>
+                <input
+                  type="range"
+                  min="30"
+                  max="100"
+                  value={Math.round(angle)}
+                  disabled={autoOscillate}
+                  onChange={(e) => dispatch(updateAngle(Number(e.target.value)))}
+                  className={cn(
+                    "w-full h-2.5 rounded-lg appearance-none cursor-pointer focus:outline-none",
+                    autoOscillate ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+                  )}
+                  style={{
+                    background: 'linear-gradient(to right, #ef4444 0%, #f59e0b 40%, #10b981 100%)'
+                  }}
+                />
+              </div>
+
+              {/* Preset Buttons */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="text-[10px] font-black text-indigo-900 uppercase">Quick Presets:</span>
+                {[
+                  { label: 'Ideal Upright (90°)', val: 90 },
+                  { label: 'Mild Slouch (72°)', val: 72 },
+                  { label: 'Desk Slouch (58°)', val: 58 },
+                  { label: 'Phone Neck (42°)', val: 42 },
+                ].map(p => (
+                  <button
+                    key={p.val}
+                    onClick={() => {
+                      setAutoOscillate(false);
+                      dispatch(updateAngle(p.val));
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-white/90 hover:bg-white text-indigo-900 border border-indigo-100 text-[10px] font-bold shadow-sm"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* NAVIGATION TABS */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+        {[
+          { id: 'realtime', label: 'Live Cockpit', icon: Activity },
+          { id: '3d', label: '3D Anatomical Twin', icon: Box },
+          { id: 'biomechanics', label: 'Spinal Biomechanics', icon: BrainCircuit },
+          { id: 'drills', label: 'Posture Exercises', icon: Dumbbell },
+          { id: 'history', label: 'Session Records', icon: Calendar }
+        ].map(tab => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={cn(
+                "px-4 py-2.5 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center gap-2 whitespace-nowrap transition-all shadow-soft active:scale-95",
+                isActive 
+                  ? "bg-indigo-600 text-white shadow-indigo-200" 
+                  : "bg-white text-slate-600 hover:bg-slate-50 border border-slate-100"
+              )}
+            >
+              <Icon size={14} />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* TAB CONTENT */}
+      {activeTab === 'realtime' && (
+        <div className="space-y-6">
+          {/* Main Hero Live Biofeedback Card */}
+          <div 
+            data-tour="posture-ring"
+            className="glass p-7 sm:p-9 rounded-[40px] border border-slate-100 shadow-premium flex flex-col md:flex-row items-center justify-between gap-8 relative overflow-hidden"
+          >
+            {/* Left: Avatar & Live Ring */}
+            <div className="flex flex-col items-center justify-center relative w-full md:w-auto">
+              <div className="relative w-52 h-52 sm:w-56 sm:h-56 flex items-center justify-center bg-slate-50/90 rounded-full border-2 border-white shadow-soft">
+                <PostureFigure size={170} angle={angle} />
+
+                {/* Floating Live Angle Badge */}
+                <div className="absolute bottom-3 bg-white/95 backdrop-blur-md px-4 py-1.5 rounded-2xl shadow-soft border border-slate-100 flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full animate-ping" style={{ backgroundColor: getStatusColor(angle) }} />
+                  <span className="text-sm font-black text-slate-900">{Math.round(angle)}° Tilt</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Center: Live Alignment Status & Action Controls */}
+            <div className="flex-1 space-y-4 text-center md:text-left w-full">
+              <div className="space-y-2">
+                <div className={cn(
+                  "inline-flex items-center gap-2 px-3.5 py-1 rounded-full text-xs font-black uppercase tracking-wider border shadow-sm",
+                  statusColorClass
+                )}>
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getStatusColor(angle) }} />
+                  <span>{statusLabel}</span>
+                </div>
+
+                <h2 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
+                  {Math.round(score)}% Alignment Score
+                </h2>
+                <p className="text-xs text-slate-500 font-medium max-w-md leading-relaxed">
+                  {isOptimal 
+                    ? "Paraspinal load is minimal. Natural spinal S-curve preserved with optimal gravitational balance." 
+                    : "Forward cervical deviation detected. Bring your chest upright and pull your chin gently back to neutralize strain."}
+                </p>
+              </div>
+
+              {/* Session Action Controls */}
+              <div className="pt-2 flex flex-wrap items-center justify-center md:justify-start gap-3">
                 {!isRecordingSession ? (
                   <button
                     onClick={() => dispatch(setIsRecordingSession(true))}
-                    className="w-full py-3 rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-sm border bg-emerald-500 hover:bg-emerald-600 border-emerald-400 text-white cursor-pointer"
-                    id="btn-session-toggle"
+                    className="px-6 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-md transition-all active:scale-95 flex items-center gap-2"
                   >
-                    <Play size={11} className="stroke-[3]" fill="currentColor" />
-                    {totalSessionSeconds > 0 ? "Resume session" : "Start posture tracking"}
+                    <Play size={14} fill="currentColor" />
+                    <span>{totalSessionSeconds > 0 ? "Resume Session" : "Start Posture Session"}</span>
                   </button>
                 ) : (
-                  <div className="grid grid-cols-2 gap-3 w-full">
+                  <div className="flex items-center gap-3 w-full sm:w-auto">
                     <button
                       onClick={() => dispatch(setIsRecordingSession(false))}
-                      className="py-3 rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-sm border bg-amber-500 hover:bg-amber-600 border-amber-400 text-white cursor-pointer"
-                      id="btn-session-pause"
+                      className="flex-1 sm:flex-initial px-5 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center justify-center gap-2"
                     >
-                      <Pause size={11} className="stroke-[3]" fill="currentColor" />
-                      Pause
+                      <Pause size={14} fill="currentColor" />
+                      <span>Pause</span>
                     </button>
 
                     <button
                       onClick={handleSaveSession}
                       disabled={isSaving}
-                      className="py-3 rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-sm border bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white cursor-pointer disabled:opacity-50"
-                      id="btn-session-save"
+                      className="flex-1 sm:flex-initial px-5 py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
                     >
-                      <CheckCircle2 size={11} className="stroke-[3]" />
-                      {isSaving ? "Saving..." : "Save Log"}
+                      <CheckCircle2 size={15} />
+                      <span>{isSaving ? "Saving..." : "Save Log"}</span>
                     </button>
                   </div>
                 )}
+
+                <button
+                  onClick={() => dispatch(recalibrateBaseline(angle))}
+                  className="px-4 py-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5"
+                >
+                  <Target size={14} />
+                  <span>Zero Baseline ({Math.round(baselineAngle)}°)</span>
+                </button>
               </div>
             </div>
           </div>
 
-          {/* Card 2: Biometric Simulator (positioned directly underneath the figure for instant alignment feedback) */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 rounded-[32px] shadow-soft space-y-5">
-            <div className="flex justify-between items-center text-left">
+          {/* 4 Essential Realtime Telemetry Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                Torso Inclination
+              </span>
+              <div className="text-2xl font-black text-slate-900">{Math.round(angle)}°</div>
+              <span className="text-[10px] font-semibold text-slate-500">
+                Target: ≥{thresholds.good}°
+              </span>
+            </div>
+
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                Spinal Load
+              </span>
+              <div className="text-2xl font-black text-slate-900">{localAI.upperBackStrainLbs} lbs</div>
+              <span className={cn("text-[10px] font-bold", localAI.upperBackStrainLbs <= 15 ? "text-emerald-600" : "text-amber-600")}>
+                {localAI.loadClassification}
+              </span>
+            </div>
+
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                Upright Time
+              </span>
+              <div className="text-2xl font-black text-slate-900">{formatDuration(goodSessionSeconds)}</div>
+              <span className="text-[10px] font-semibold text-slate-500">
+                of {formatDuration(totalSessionSeconds)}
+              </span>
+            </div>
+
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                Slouch Alerts
+              </span>
+              <div className="text-2xl font-black text-slate-900">{incidents || 0}</div>
+              <span className="text-[10px] font-semibold text-slate-500">
+                {incidents === 0 ? "Zero alerts" : "Detected"}
+              </span>
+            </div>
+          </div>
+
+          {/* Live Posture Sparkline Area Chart */}
+          <div className="glass p-6 rounded-[36px] border border-slate-100 shadow-soft space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Activity size={15} className="text-indigo-600" />
+                <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                  Live Posture Trend (Recent Readings)
+                </h3>
+              </div>
+              <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full">
+                Streaming Sensor Feed
+              </span>
+            </div>
+
+            <div className="h-32 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="angleGradient2" x1="0" y1="0" x2="0" y2="100%">
+                      <stop offset="5%" stopColor={getStatusColor(angle)} stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor={getStatusColor(angle)} stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <YAxis domain={[30, 100]} tick={{ fontSize: 9 }} stroke="#cbd5e1" />
+                  <Tooltip 
+                    formatter={(val: any) => [`${val}°`, 'Angle']}
+                    contentStyle={{ borderRadius: '12px', fontSize: '11px', border: '1px solid #e2e8f0' }}
+                  />
+                  <Area 
+                    type="monotone" 
+                    dataKey="angle" 
+                    stroke={getStatusColor(angle)} 
+                    strokeWidth={2.5} 
+                    fillOpacity={1} 
+                    fill="url(#angleGradient2)" 
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* AI Ergonomic Summary Box */}
+          <div className="bg-gradient-to-br from-indigo-900 to-slate-900 rounded-[36px] p-7 text-white shadow-premium space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className={cn(
-                  "w-9 h-9 rounded-xl flex items-center justify-center transition-colors",
-                  isSimulating ? "bg-indigo-50 text-indigo-600" : "bg-slate-50 text-slate-400"
-                )}>
-                  <Sparkles size={16} className={isSimulating ? "animate-pulse" : ""} />
+                <div className="w-10 h-10 rounded-2xl bg-white/10 flex items-center justify-center text-white shrink-0">
+                  <Sparkles size={18} className="text-indigo-300 animate-pulse" />
                 </div>
                 <div>
-                  <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">Biometric Simulator</h3>
-                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Simulate tilt angles & alerts</p>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  const targetSim = !isSimulating;
-                  dispatch(setIsSimulating(targetSim));
-                  dispatch(setDeviceStatus(targetSim));
-                  dispatch(setHasPaired(targetSim));
-                }}
-                className={cn(
-                  "p-2 px-3.5 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all active:scale-95 shadow-sm border cursor-pointer",
-                  isSimulating 
-                    ? "bg-indigo-50 border-indigo-100 text-indigo-600 hover:bg-indigo-100/60" 
-                    : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                )}
-                id="btn-toggle-sim"
-              >
-                {isSimulating ? "ON" : "Activate"}
-              </button>
-            </div>
-
-            {isSimulating && (
-              <div className="pt-2.5 border-t border-slate-50 space-y-4">
-                <div className="flex items-center justify-between">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest text-left">
-                    Auto-Fluctuate Angle
-                  </label>
-                  <button
-                    onClick={() => setAutoOscillate(!autoOscillate)}
-                    className={cn(
-                      "p-1.5 px-3 rounded-lg text-[8px] font-black uppercase tracking-wider transition-all active:scale-95 border cursor-pointer",
-                      autoOscillate 
-                        ? "bg-emerald-50 border-emerald-100 text-emerald-600" 
-                        : "bg-white border-slate-200 text-slate-400"
-                    )}
-                    id="btn-toggle-oscillate"
-                  >
-                    {autoOscillate ? "Oscillating (2s)" : "Manual Slider"}
-                  </button>
-                </div>
-
-                <p className="text-[10px] text-slate-400 font-medium leading-relaxed text-left">
-                  {autoOscillate 
-                    ? "Sensing engine is dynamically oscillating the spinal tilt between 42° and 92° to test real-time alert trigger warnings." 
-                    : "Drag the slider manually below. Pulling below 65° simulates lumbar slouching to log warnings and incidents."}
-                </p>
-
-                <div className="space-y-2 pt-1 text-left">
-                  <div className="flex justify-between items-center text-[9px] font-mono font-black text-slate-400">
-                    <span>Slouch (&lt; {thresholds.warn}°)</span>
-                    <span className={cn(
-                      "text-xs font-black px-2 py-0.5 rounded bg-slate-50 border",
-                      angle < thresholds.warn ? "text-rose-500 border-rose-100 bg-rose-50/50" : "text-emerald-500 border-emerald-100"
-                    )}>{Math.round(angle)}°</span>
-                    <span>Optimal (&gt; {thresholds.good}°)</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="30"
-                    max="100"
-                    value={Math.round(angle)}
-                    disabled={autoOscillate}
-                    onChange={(e) => {
-                      dispatch(updateAngle(Number(e.target.value)));
-                    }}
-                    className={cn(
-                      "w-full h-1.5 rounded-lg appearance-none cursor-pointer focus:outline-none transition-all",
-                      autoOscillate ? "bg-slate-100 opacity-60 cursor-not-allowed" : "bg-slate-200 hover:bg-slate-300"
-                    )}
-                    style={{
-                      background: `linear-gradient(to right, #ef4444 0%, #f97316 45%, #22c55e 100%)`
-                    }}
-                    id="slider-sim-angle"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN: BIOMETRIC INTEL & HISTORIC PERFORMANCE (lg:col-span-7) */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Card 4: Symmetric Biometrics metrics Grid */}
-          <div className="space-y-3">
-            <div className="px-1 flex justify-between items-center text-left">
-              <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">Biometric telemetry Metrics</h3>
-              <Shield size={13} className="text-slate-300" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              {metrics.map((m, i) => {
-                const Icon = m.icon;
-                return (
-                  <div key={i} className="bg-white/80 backdrop-blur-md border border-slate-100 p-4 rounded-[24px] shadow-soft space-y-3 text-left">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none">{m.label}</span>
-                      <div className={cn("w-7 h-7 rounded-lg bg-slate-50 flex items-center justify-center", m.color)}>
-                        {typeof Icon === 'function' && !('displayName' in Icon) ? (Icon as any)({ size: 12 }) : <Icon size={12} />}
-                      </div>
-                    </div>
-                    <div>
-                      <h4 className="text-base font-black text-slate-800 leading-none">{m.value}</h4>
-                    </div>
-                  </div>
-                );
-              })}
-              
-              {/* Symmetrical Wide Dynamic Recovery Recommendation Banner */}
-              <div className="col-span-2 bg-slate-900 p-4 rounded-[24px] flex items-center justify-between group cursor-pointer shadow-premium transition-all hover:bg-slate-950 text-left">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center text-white shrink-0">
-                    <Activity size={16} className="animate-pulse text-indigo-400" />
-                  </div>
-                  <div>
-                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Automated Recovery Recommendation</p>
-                    <p className="text-xs font-semibold text-white leading-snug">“Take a 2-minute thoracic stretch break to reset vertebrae”</p>
-                  </div>
-                </div>
-                <ChevronRight size={14} className="text-slate-400 group-hover:translate-x-1 transition-transform shrink-0" />
-              </div>
-            </div>
-          </div>
-
-          {/* Card 7: Rest & Recovery Decompression Analysis */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 sm:p-7 rounded-[32px] space-y-5 shadow-soft text-left">
-            <div className="flex items-center gap-3 pb-2.5 border-b border-slate-50">
-              <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center shrink-0">
-                <TrendingDown className="w-5 h-5" />
-              </div>
-              <div className="space-y-0.5">
-                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Recovery After Break Analysis</h4>
-                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Lactic and tension coefficients during postural shifts</p>
-              </div>
-            </div>
-
-            {completedSessionsCount <= 1 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-center px-4 bg-slate-50/50 rounded-[24px] border border-dashed border-slate-200">
-                <TrendingDown className="w-8 h-8 text-slate-300 mb-2 animate-pulse" />
-                <h5 className="text-xs font-black text-slate-700 uppercase tracking-wider mb-1">Break Recovery Analytics Lock</h5>
-                <p className="text-[10px] text-slate-400 font-semibold max-w-[320px] leading-relaxed">
-                  More than 1 completed session is required to perform paraspinal recovery and micro-break efficiency analytics. Please complete and save your upcoming session to unlock this clinical panel.
-                </p>
-                {!isRecordingSession && (
-                  <button 
-                    onClick={() => dispatch(setIsRecordingSession(true))}
-                    className="mt-3.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full text-[9px] font-black uppercase tracking-widest transition-all active:scale-95"
-                  >
-                    Start Recording
-                  </button>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-                  <div className="bg-slate-50 p-3 rounded-xl space-y-1">
-                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Pre-Break Fatigue</span>
-                    <div className="text-base font-black text-rose-500">
-                      {activeBreak 
-                        ? `${activeBreak.preBreakFatigue || 0}%` 
-                        : (breakHistory && breakHistory.length > 0 
-                            ? `${breakHistory[0].preBreakFatigue}%` 
-                            : `${totalSessionSeconds > 0 ? Math.min(98, Math.max(0, Math.round((totalSessionSeconds / 60) * 1.2 + incidents * 5.0))) : 0}%`)}
-                    </div>
-                    <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                      {activeBreak ? 'Active Break Snapshot' : (breakHistory && breakHistory.length > 0 ? 'Last Rest log' : (totalSessionSeconds > 0 ? 'Live Monitoring' : 'No session recorded'))}
-                    </p>
-                  </div>
-                  <div className="bg-slate-50 p-3 rounded-xl space-y-1">
-                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Post-Break Fatigue</span>
-                    <div className="text-base font-black text-indigo-600">
-                      {activeBreak
-                        ? (() => {
-                            const pre = activeBreak.preBreakFatigue || 0;
-                            const reliefFraction = liveBreakElapsed > 0 ? (1 - Math.exp(-liveBreakElapsed / 240)) : 0;
-                            const relief = Math.min(98, Math.max(0, Math.round(reliefFraction * 100)));
-                            const cleared = (pre * relief) / 100;
-                            return `${Math.max(0, Math.round(pre - cleared))}%`;
-                          })()
-                        : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].postBreakFatigue ?? (100 - (breakHistory[0] as any).postBreakResilience || 0)}%` : '0%')}
-                    </div>
-                    <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                      {activeBreak ? `Resting (${formatBreakDuration(liveBreakElapsed)})...` : (breakHistory && breakHistory.length > 0 ? 'After last rest break' : 'No rest break taken')}
-                    </p>
-                  </div>
-                  <div className="bg-slate-50 p-3 rounded-xl space-y-1">
-                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider block">Thoracic Relief</span>
-                    <div className="text-base font-black text-emerald-500">
-                      {activeBreak
-                        ? `${Math.min(98, Math.max(0, Math.round((1 - Math.exp(-liveBreakElapsed / 240)) * 100)))}%`
-                        : (breakHistory && breakHistory.length > 0 ? `${breakHistory[0].thoracicStressRelief}%` : '0%')}
-                    </div>
-                    <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                      {activeBreak ? 'Decompressing...' : (breakHistory && breakHistory.length > 0 ? 'Achieved decompression' : 'No rest break taken')}
-                    </p>
-                  </div>
-                </div>
-
-                {breakHistory && breakHistory.length > 0 && (
-                  <div className="pt-4 border-t border-slate-100 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider block">Micro-Break Restoration Log</span>
-                      <span className="text-[8px] font-black uppercase text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
-                        Synced to Cloud
-                      </span>
-                    </div>
-                    <div className="max-h-36 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-                      {breakHistory.slice(0, 5).map((br, idx) => (
-                        <div key={br.id || idx} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100/60 transition-all hover:bg-slate-100/50">
-                          <div className="flex items-center gap-2">
-                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse animate-duration-1000" />
-                            <div>
-                              <span className="text-[9px] font-black text-slate-700 block">
-                                Micro-Rest #{breakHistory.length - idx}
-                              </span>
-                              <span className="text-[8px] font-bold text-slate-400 uppercase block mt-0.5">
-                                {formatBreakTime(br.timestamp)} • {formatBreakDuration(br.durationSeconds)} duration
-                              </span>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-3 shrink-0">
-                            <div className="text-right">
-                              <span className="text-[7px] font-black text-rose-400 uppercase tracking-wider block">Pre-Fatigue</span>
-                              <span className="text-[10px] font-black text-rose-500 leading-none">{br.preBreakFatigue}%</span>
-                            </div>
-                            <div className="text-right">
-                              <span className="text-[7px] font-black text-indigo-400 uppercase tracking-wider block">Post-Fatigue</span>
-                              <span className="text-[10px] font-black text-indigo-500 leading-none">{br.postBreakFatigue ?? (100 - (br as any).postBreakResilience || 0)}%</span>
-                            </div>
-                            <div className="text-right">
-                              <span className="text-[7px] font-black text-emerald-400 uppercase tracking-wider block">Relief</span>
-                              <span className="text-[10px] font-black text-emerald-500 leading-none">+{br.thoracicStressRelief}%</span>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Card 9: Active Training Milestones */}
-          <div className="space-y-3">
-            <div className="px-1 text-left">
-              <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Active Training Milestones</h4>
-              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Gamified achievements for posture stabilizer training</p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              {mockMilestones.map((ms, msIdx) => {
-                const IconComponent = ms.icon;
-                return (
-                  <div 
-                    key={msIdx} 
-                    className={cn(
-                      "p-4 rounded-[24px] border text-center flex flex-col items-center justify-between min-h-[140px] transition-all hover:border-slate-200 cursor-default relative overflow-hidden",
-                      ms.unlocked 
-                        ? "bg-white border-indigo-100 shadow-soft" 
-                        : "bg-slate-50/50 border-slate-100 text-slate-400"
-                    )}
-                  >
-                    {/* Visual Unlocked Highlight */}
-                    {ms.unlocked && (
-                      <div className="absolute top-0 right-0 w-8 h-8 bg-indigo-500/10 rounded-bl-[16px] flex items-center justify-center">
-                        <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                      </div>
-                    )}
-
-                    <div className={cn(
-                      "w-9 h-9 rounded-full flex items-center justify-center mx-auto mb-2",
-                      ms.unlocked ? "bg-indigo-50 text-indigo-600" : "bg-slate-100 text-slate-300"
-                    )}>
-                      <IconComponent className="w-5 h-5" />
-                    </div>
-
-                    <div className="space-y-0.5">
-                      <h5 className={cn("text-[11px] font-black", ms.unlocked ? "text-slate-800" : "text-slate-500")}>{ms.title}</h5>
-                      <p className="text-[8px] leading-tight font-semibold text-slate-400">{ms.desc}</p>
-                    </div>
-
-                    <div className="w-full mt-2">
-                      <div className="flex justify-between text-[7px] font-black text-slate-400 mb-0.5">
-                        <span>Progress</span>
-                        <span>
-                          {ms.isTime ? `${Math.round(ms.current / 60)}m / ${Math.round(ms.target / 60)}m` : `${Math.min(ms.target, ms.current)} / ${ms.target}`}
-                        </span>
-                      </div>
-                      <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
-                        <div 
-                          className={cn("h-full transition-all duration-500", ms.unlocked ? "bg-indigo-600" : "bg-slate-300")}
-                          style={{ width: `${Math.min(100, (ms.current / ms.target) * 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Card 5: Posture AI Clinician Card */}
-          <div className="relative rounded-[32px] overflow-hidden p-6 bg-gradient-to-br from-indigo-950 via-slate-900 to-violet-950 border border-indigo-500/20 shadow-premium group text-left">
-            <div className="absolute -top-12 -right-12 w-32 h-32 bg-indigo-500/20 blur-2xl rounded-full pointer-events-none" />
-            <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-violet-500/10 blur-2xl rounded-full pointer-events-none" />
-            <div className="absolute inset-0 bg-[radial-gradient(#ffffff04_1px,transparent_1px)] [background-size:16px_16px] opacity-60 pointer-events-none" />
-
-            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
-              <div className="flex items-start gap-4">
-                <div className="relative shrink-0">
-                  <div className="absolute inset-0 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-2xl blur-md opacity-50 group-hover:opacity-85 transition-opacity animate-duration-1000" />
-                  <div className="relative w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center border border-white/10 shadow-lg text-white">
-                    {isSummarizing ? (
-                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <Brain className="w-6 h-6 text-white animate-pulse" />
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex items-center flex-wrap gap-2">
-                    <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-[8px] font-black text-indigo-300 uppercase tracking-widest flex items-center gap-1">
-                      <span className="w-1 h-1 rounded-full bg-indigo-400 animate-ping" />
-                      Gemini Clinical AI
-                    </span>
-                    <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">v3.5 Flash</span>
-                  </div>
-                  <h4 className="text-lg font-black text-white tracking-tight group-hover:text-indigo-200 transition-colors">
-                    Posture AI Clinician
-                  </h4>
-                  <p className="text-xs text-slate-400 font-medium leading-relaxed max-w-sm">
-                    Generate an intelligent, real-time posture analysis report evaluating your vertebral S-curve, fatigue coefficients, and active streaks.
+                  <h3 className="text-sm font-black text-white">PostureCare AI Ergonomist</h3>
+                  <p className="text-xs text-indigo-200 font-medium">
+                    Clinical biomechanics breakdown powered by Gemini AI.
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
-                {summary && (
-                  <button
-                    onClick={() => setSummary(null)}
-                    className="px-3 py-3 rounded-2xl bg-white/10 text-white font-black text-[9px] uppercase tracking-widest hover:bg-white/15 active:scale-95 transition-all flex items-center justify-center gap-1 border border-white/10 cursor-pointer"
-                  >
-                    Clear
-                  </button>
+              <button
+                onClick={handleGenerateSummary}
+                disabled={isSummarizing}
+                className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-900 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 shadow-md transition-all active:scale-95 shrink-0 disabled:opacity-60"
+              >
+                {isSummarizing ? (
+                  <>
+                    <RefreshCw size={13} className="animate-spin" />
+                    <span>Analyzing Spine...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={13} className="text-indigo-600" />
+                    <span>{summary ? "Regenerate Analysis" : "Generate AI Advice"}</span>
+                  </>
                 )}
-                <button
-                  onClick={handleGenerateSummary}
-                  disabled={isSummarizing}
-                  className="px-5 py-3 rounded-2xl bg-white text-slate-900 font-black text-[9px] uppercase tracking-widest hover:bg-slate-100 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-lg shrink-0 min-w-[130px] disabled:opacity-50 cursor-pointer"
-                >
-                  {isSummarizing ? (
-                    <>
-                      <RefreshCw size={10} className="animate-spin" />
-                      Analyzing...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles size={10} className="text-indigo-600 animate-bounce" />
-                      {summary ? "Regenerate" : "Get Report"}
-                      <ChevronRight size={10} className="stroke-[3]" />
-                    </>
-                  )}
-                </button>
-              </div>
+              </button>
             </div>
 
             {summary && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                className="mt-6 pt-6 border-t border-white/10 relative z-10 text-slate-200"
+                animate={{ opacity: 1, height: 'auto' }}
+                className="p-4 bg-white/5 border border-white/10 rounded-2xl text-xs text-slate-200 leading-relaxed max-h-60 overflow-y-auto"
               >
-                <div className="bg-white/5 border border-white/10 rounded-[24px] p-5 sm:p-6 space-y-4 shadow-inner max-h-[500px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
-                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
-                    <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-2">
-                      <Sparkles size={12} className="animate-pulse" />
-                      Clinical Biomechanical Analysis
-                    </span>
-                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider">
-                      Generative Report
-                    </span>
-                  </div>
-                  <div className="prose prose-invert text-[11px] leading-relaxed font-sans space-y-2.5">
-                    <Markdown
-                      components={{
-                        h1: ({node, ...props}) => <h1 className="text-xs font-black text-white uppercase tracking-wider mt-4 mb-2 border-b border-white/10 pb-1" {...props} />,
-                        h2: ({node, ...props}) => <h2 className="text-[11px] font-black text-indigo-300 uppercase tracking-wider mt-3 mb-1" {...props} />,
-                        h3: ({node, ...props}) => <h3 className="text-[11px] font-bold text-violet-300 mt-2.5 mb-0.5" {...props} />,
-                        p: ({node, ...props}) => <p className="text-slate-300 leading-relaxed my-1 font-medium" {...props} />,
-                        ul: ({node, ...props}) => <ul className="list-disc pl-5 my-1.5 space-y-1 text-slate-300" {...props} />,
-                        ol: ({node, ...props}) => <ol className="list-decimal pl-5 my-1.5 space-y-1 text-slate-300" {...props} />,
-                        li: ({node, ...props}) => <li className="text-slate-300 leading-relaxed font-medium" {...props} />,
-                        strong: ({node, ...props}) => <strong className="font-black text-white" {...props} />,
-                      }}
-                    >
-                      {summary}
-                    </Markdown>
-                  </div>
-                </div>
+                <Markdown>{summary}</Markdown>
               </motion.div>
             )}
           </div>
+        </div>
+      )}
 
-          {/* Card 6: Posture Intelligence Dashboard (Layer 2 - 4) */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 sm:p-7 rounded-[32px] space-y-5 shadow-soft">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2.5 border-b border-slate-100 text-left">
-              <div className="space-y-0.5">
-                <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                  <Brain className="w-4 h-4 text-indigo-500 animate-pulse" />
-                  Posture Intelligence Dashboard
-                </h4>
-                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider leading-relaxed">
-                  On-device clinical and mathematical models running offline (Layers 2 - 4)
+      {/* 3D ANATOMICAL TWIN TAB */}
+      {activeTab === '3d' && (
+        <div data-tour="spine-3d-model" className="space-y-6">
+          <div className="glass p-6 sm:p-8 rounded-[40px] border border-slate-100 shadow-premium">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-base font-black text-slate-900 tracking-tight flex items-center gap-2">
+                  <Box size={16} className="text-indigo-600" />
+                  Interactive 3D Anatomical Spine Twin
+                </h3>
+                <p className="text-xs text-slate-500 font-medium mt-0.5">
+                  Rotate 360° to inspect cervical, thoracic, and lumbar stress heatmaps in real time.
                 </p>
               </div>
-              <div className="flex items-center gap-2 self-start sm:self-auto">
-                <span className="text-[8px] font-black uppercase text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100 shadow-sm">
-                  Model v{localAI.modelMetadata?.version || "1.0"} (Active)
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black px-3 py-1 rounded-full bg-indigo-50 text-indigo-700">
+                  {Math.round(angle)}° Dynamic Stance
                 </span>
               </div>
             </div>
 
-            {/* Dynamic On-Device Anomaly Alert Banner */}
-            {localAI.anomalyDetected && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="p-3 rounded-2xl bg-rose-50 border border-rose-150 flex items-start gap-3 text-rose-800 shadow-sm text-left animate-duration-1000"
-              >
-                <AlertOctagon className="w-4.5 h-4.5 text-rose-500 shrink-0 mt-0.5 animate-bounce" />
-                <div className="space-y-1">
-                  <span className="text-[8px] font-black uppercase tracking-widest text-rose-600 block">
-                    On-Device Anomaly Engine (Layer 3)
-                  </span>
-                  <h5 className="text-xs font-black">Postural Deviation Alert (Score: {localAI.anomalyScore}/100)</h5>
-                  <p className="text-[9px] font-semibold text-rose-700/90 leading-relaxed">
-                    {localAI.anomalyDetails}
-                  </p>
-                </div>
-              </motion.div>
-            )}
+            {/* 3D Spine Component */}
+            <div className="pt-4">
+              <Spine3DModel 
+                avgAngle={angle}
+                slouchIncidents={incidents}
+                stabilityScore={localAI.stabilityScore}
+                showControls={true}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
-            {/* Tab Controls */}
-            <div className="flex p-1 bg-slate-50 rounded-2xl border border-slate-100/60 overflow-x-auto scrollbar-none gap-1">
-              {[
-                { id: 'biomechanics', label: 'Clinician Trace' },
-                { id: 'markov', label: 'Markov States' },
-                { id: 'parameters', label: 'Model Versioning' },
-                { id: 'compliance', label: 'Compliance & Certainty' }
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveAiTab(tab.id as any)}
+      {/* BIOMECHANICS TAB */}
+      {activeTab === 'biomechanics' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="glass p-6 rounded-[32px] border border-slate-100 shadow-soft space-y-2">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-400">
+                Upper Back Strain
+              </span>
+              <div className="text-3xl font-black text-slate-900">{localAI.upperBackStrainLbs} lbs</div>
+              <p className="text-xs text-slate-500 font-medium">{localAI.loadClassification} tensile load</p>
+            </div>
+
+            <div className="glass p-6 rounded-[32px] border border-slate-100 shadow-soft space-y-2">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-400">
+                Fatigue Score
+              </span>
+              <div className="text-3xl font-black text-slate-900">{localAI.fatigueScore}%</div>
+              <p className="text-xs text-slate-500 font-medium">{localAI.fatigueTrend} accumulation</p>
+            </div>
+
+            <div className="glass p-6 rounded-[32px] border border-slate-100 shadow-soft space-y-2">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-400">
+                Cumulative Load
+              </span>
+              <div className="text-3xl font-black text-slate-900">{localAI.cumulativeDailyLoadKgh} kg·h</div>
+              <p className="text-xs text-slate-500 font-medium">Gravitational torque on spine</p>
+            </div>
+          </div>
+
+          <div className="glass p-7 rounded-[40px] border border-slate-100 shadow-premium space-y-4">
+            <h3 className="text-base font-black text-slate-900 tracking-tight flex items-center gap-2">
+              <BrainCircuit size={16} className="text-indigo-600" />
+              Clinical Recommendations & Ergonomic Plan
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed font-medium">
+              {localAI.dailyRecommendation}
+            </p>
+            <div className="p-4 rounded-2xl bg-indigo-50/70 border border-indigo-100 text-xs font-medium text-indigo-900">
+              <strong>Break Recommendation:</strong> {localAI.breakRecommendationMessage}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POSTURE EXERCISES & DRILLS TAB */}
+      {activeTab === 'drills' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {POSTURE_EXERCISES.map((ex, idx) => {
+              const isSelected = activeExerciseIndex === idx;
+              return (
+                <div 
+                  key={ex.id}
                   className={cn(
-                    "p-2 px-3 text-[9px] font-black uppercase tracking-wider rounded-xl transition-all whitespace-nowrap flex-1 text-center cursor-pointer",
-                    activeAiTab === tab.id
-                      ? "bg-white text-indigo-600 shadow-sm border border-slate-100"
-                      : "text-slate-400 hover:text-slate-600"
+                    "glass p-6 rounded-[32px] border shadow-soft flex flex-col justify-between space-y-4 transition-all",
+                    isSelected ? "border-indigo-500 ring-2 ring-indigo-400/30" : "border-slate-100"
                   )}
                 >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Tab Contents */}
-            <div className="pt-1">
-              {/* TAB 1: Clinician Evidence Trace */}
-              {activeAiTab === 'biomechanics' && (
-                <div className="space-y-4">
-                  <div className="space-y-0.5 text-left">
-                    <h5 className="text-xs font-black text-slate-700 uppercase tracking-wider">Clinician Traceability Chain (Layer 4)</h5>
-                    <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
-                      Real-time explainable feature-weight calculations justifying your current postural alignment wellness.
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 px-2.5 py-0.5 rounded-full">
+                        {ex.target}
+                      </span>
+                      <span className="text-xs font-bold text-slate-400">{ex.durationSec}s</span>
+                    </div>
+                    <h4 className="text-sm font-black text-slate-900">{ex.name}</h4>
+                    <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                      {ex.description}
                     </p>
                   </div>
 
-                  {/* Paraspinal force header cards */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-left">
-                    <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-xl">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Paraspinal Force</span>
-                      <div className="text-sm font-black text-slate-800">{localAI.upperBackStrainLbs} lbs</div>
-                      <span className="text-[8px] font-bold text-slate-400 uppercase leading-none">Vertebral Load</span>
-                    </div>
-                    <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-xl">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Daily Cumulative</span>
-                      <div className="text-sm font-black text-slate-800">{localAI.cumulativeDailyLoadKgh} kg-h</div>
-                      <span className="text-[8px] font-bold text-slate-400 uppercase leading-none">Stress Index</span>
-                    </div>
-                    <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-xl">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Fatigue score</span>
-                      <div className="text-sm font-black text-slate-800">{localAI.fatigueScore}%</div>
-                      <span className="text-[8px] font-bold text-slate-400 uppercase leading-none">Muscle Lactic</span>
-                    </div>
-                    <div className="bg-slate-50 border border-slate-100 p-2.5 rounded-xl">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Unbroken Stress</span>
-                      <div className="text-sm font-black text-slate-800">{localAI.continuousStressMinutes}m</div>
-                      <span className="text-[8px] font-bold text-slate-400 uppercase leading-none">Tension Exp</span>
-                    </div>
-                  </div>
-
-                  {/* Explanatory Trace Log */}
-                  <div className="border border-slate-100 rounded-2xl overflow-hidden bg-white text-left">
-                    <div className="grid grid-cols-12 bg-slate-50 p-2 text-[8px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                      <div className="col-span-4">Factor</div>
-                      <div className="col-span-5">Evidence Trail</div>
-                      <div className="col-span-2 text-center">Weight</div>
-                      <div className="col-span-1 text-right">Rating</div>
-                    </div>
-                    <div className="divide-y divide-slate-100">
-                      {localAI.evidenceChain && localAI.evidenceChain.length > 0 ? (
-                        localAI.evidenceChain.map((item, idx) => (
-                          <div key={idx} className="grid grid-cols-12 p-2.5 text-[10px] items-center">
-                            <div className="col-span-4 font-black text-slate-700">{item.factor}</div>
-                            <div className="col-span-5 font-semibold text-slate-500 pr-2">{item.evidence}</div>
-                            <div className="col-span-2 text-center font-black text-slate-600">{item.importance}</div>
-                            <div className="col-span-1 text-right">
-                              <span className={cn(
-                                "px-1.5 py-0.5 rounded-full text-[7px] font-black uppercase leading-none",
-                                item.significance === "Critical" ? "bg-rose-50 text-rose-500 border border-rose-100" :
-                                item.significance === "High" ? "bg-amber-50 text-amber-500 border border-amber-100" :
-                                item.significance === "Moderate" ? "bg-indigo-50 text-indigo-500 border border-indigo-100" :
-                                "bg-emerald-50 text-emerald-500 border border-emerald-100"
-                              )}>
-                                {item.significance.substring(0, 3)}
-                              </span>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="p-4 text-center text-[10px] font-semibold text-slate-400 italic">
-                          Diagnostic factors calibrating... Sit upright for 5 seconds.
-                        </div>
+                  <div className="pt-2 flex items-center justify-between border-t border-slate-100">
+                    <span className="text-[11px] font-bold text-slate-500">{ex.reps}</span>
+                    <button
+                      onClick={() => startExercise(idx)}
+                      className={cn(
+                        "px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-sm active:scale-95",
+                        isSelected && isExerciseRunning ? "bg-amber-500 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"
                       )}
-                    </div>
+                    >
+                      {isSelected && isExerciseRunning ? (
+                        <>
+                          <Timer size={12} className="animate-spin" />
+                          <span>{exerciseTimer}s</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play size={12} fill="currentColor" />
+                          <span>Start Drill</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 </div>
-              )}
-
-              {/* TAB 2: Markov Posture Transitions */}
-              {activeAiTab === 'markov' && (
-                <div className="space-y-4">
-                  <div className="space-y-0.5 text-left">
-                    <h5 className="text-xs font-black text-slate-700 uppercase tracking-wider">Markov State Transitions (Layer 3)</h5>
-                    <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
-                      Calculates transition probabilities between discrete physical states based on chronological sensor stream angles.
-                    </p>
-                  </div>
-
-                  {/* State Indicator Layout */}
-                  <div className="p-4 rounded-2xl border border-slate-100 bg-slate-50 flex flex-col items-center justify-center space-y-3 relative overflow-hidden">
-                    <div className="text-[8px] font-black uppercase tracking-widest text-slate-400">Current Computed State</div>
-                    <div className={cn(
-                      "p-2 px-4 rounded-xl text-xs font-black uppercase tracking-wider text-white shadow-md relative z-10",
-                      localAI.markovState === "Optimal Upright" ? "bg-emerald-500" :
-                      localAI.markovState === "Mild Lean" ? "bg-amber-500" :
-                      localAI.markovState === "Micro Slouch" ? "bg-orange-500" :
-                      localAI.markovState === "Severe Collapse" ? "bg-rose-500 animate-pulse animate-duration-1000" :
-                      "bg-indigo-600"
-                    )}>
-                      {localAI.markovState}
-                    </div>
-                    <p className="text-[9px] text-slate-500 font-medium text-center max-w-sm">
-                      User posture is mapped within a finite state automaton to distinguish micro-movements, healthy adjustments, and real fatigue decay.
-                    </p>
-                  </div>
-
-                  {/* Transition Matrix Probabilities */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-left">
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex flex-col justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Upright ➔ Lean</span>
-                      <div className="text-sm font-black text-slate-800 mt-1">{localAI.markovTransitions.stateUprightToLean}%</div>
-                      <span className="text-[7px] text-slate-400 font-bold uppercase mt-0.5">Likelihood</span>
-                    </div>
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex flex-col justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Lean ➔ Slouch</span>
-                      <div className="text-sm font-black text-slate-800 mt-1">{localAI.markovTransitions.stateLeanToSlouch}%</div>
-                      <span className="text-[7px] text-slate-400 font-bold uppercase mt-0.5">Likelihood</span>
-                    </div>
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex flex-col justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Slouch ➔ Collapse</span>
-                      <div className="text-sm font-black text-slate-800 mt-1">{localAI.markovTransitions.stateSlouchToSevere}%</div>
-                      <span className="text-[7px] text-slate-400 font-bold uppercase mt-0.5">Likelihood</span>
-                    </div>
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex flex-col justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Slouch ➔ Recovery</span>
-                      <div className="text-sm font-black text-slate-800 mt-1">{localAI.markovTransitions.stateSlouchToRecovery}%</div>
-                      <span className="text-[7px] text-slate-400 font-bold uppercase mt-0.5">Active Adjust</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 3: Personalized Model Versioning */}
-              {activeAiTab === 'parameters' && (
-                <div className="space-y-4 text-left">
-                  <div className="space-y-0.5">
-                    <h5 className="text-xs font-black text-slate-700 uppercase tracking-wider">Personalized Model Versioning (Layer 4 Loop)</h5>
-                    <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
-                      Your baseline stamina coefficients and alerts tune themselves dynamically over time as completed sessions are archived on-device.
-                    </p>
-                  </div>
-
-                  {/* Parameters List */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-                    <div className="p-3 bg-slate-50/50 rounded-xl border border-slate-100 space-y-1">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block">Endurance Base</span>
-                      <div className="text-sm font-black text-slate-800">
-                        {localAI.modelMetadata?.fatigueCoefficient ? `${(1 / localAI.modelMetadata.fatigueCoefficient).toFixed(2)}x` : "1.00x"}
-                      </div>
-                      <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                        Muscular endurance coefficient. Represents paraspinal resistance.
-                      </p>
-                    </div>
-                    <div className="p-3 bg-slate-50/50 rounded-xl border border-slate-100 space-y-1">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block">Alert Sensitivity</span>
-                      <div className="text-sm font-black text-slate-800">
-                        {localAI.modelMetadata?.sensitivityFactor ? `${localAI.modelMetadata.sensitivityFactor.toFixed(2)}x` : "1.00x"}
-                      </div>
-                      <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                        Warning trigger tightens as historical compliance increases.
-                      </p>
-                    </div>
-                    <div className="p-3 bg-slate-50/50 rounded-xl border border-slate-100 space-y-1">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block">Compliance Baseline</span>
-                      <div className="text-sm font-black text-slate-800">
-                        {localAI.modelMetadata?.complianceBaseline ? `${localAI.modelMetadata.complianceBaseline}%` : "85.0%"}
-                      </div>
-                      <p className="text-[9px] text-slate-400 font-medium leading-tight">
-                        Moving average representing your alert responsiveness.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-indigo-50/40 border border-indigo-100/40 text-[9px] text-indigo-700/90 leading-relaxed font-semibold">
-                    ℹ️ **Local Optimization:** Saving posture sessions automatically triggers local AI retraining of your warning sensitivities and fatigue slopes.
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 4: Compliance Predictors */}
-              {activeAiTab === 'compliance' && (
-                <div className="space-y-4 text-left">
-                  <div className="space-y-0.5">
-                    <h5 className="text-xs font-black text-slate-700 uppercase tracking-wider">Predictive Compliance & Certainty</h5>
-                    <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
-                      Real-time statistical estimators predicting immediate alert correction success and compiling sensor signal fluctuations.
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex flex-col justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
-                        Correction Likelihood
-                      </span>
-                      <div className="text-base font-black text-indigo-600 my-0.5">{localAI.logisticComplianceEstimate}%</div>
-                      <p className="text-[9px] text-slate-400 font-medium leading-normal">
-                        Logistic probability that you will correct posture if alerted.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex flex-col justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
-                        Certainty Margin
-                      </span>
-                      <div className="text-base font-black text-emerald-500 my-0.5">{localAI.confidenceScore}%</div>
-                      <div className="text-[8px] text-slate-500 font-bold font-mono leading-none mb-1">Interval: {localAI.confidenceInterval}</div>
-                      <p className="text-[9px] text-slate-400 font-medium leading-normal">
-                        Compound margin of raw sensor fluctuation noise.
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex flex-col justify-between">
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
-                        Gyroscopic Drift
-                      </span>
-                      <div className="text-base font-black text-slate-800 my-0.5">{localAI.sensorDriftEstimatePercent}%</div>
-                      <p className="text-[9px] text-slate-400 font-medium leading-normal">
-                        Estimated gyroscopic signal error from continuous sitting.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+              );
+            })}
           </div>
+        </div>
+      )}
 
-          {/* Card 10: Biometric Calculation Logic Guide */}
-          <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 rounded-[32px] shadow-soft">
-            <details className="group [&_summary::-webkit-details-marker]:hidden border border-slate-150 rounded-2xl overflow-hidden bg-slate-50/40 text-left">
-              <summary className="flex cursor-pointer items-center justify-between p-3.5 text-slate-800 transition-colors hover:bg-slate-50">
-                <div className="flex items-center gap-3">
-                  <div className="w-7 h-7 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
-                    <Info size={14} />
-                  </div>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-700 font-sans">How is this calculated?</span>
-                </div>
-                <span className="shrink-0 transition duration-300">
-                  <ChevronRight size={14} className="text-slate-400 group-open:rotate-90 transition-transform" />
-                </span>
-              </summary>
-              <div className="p-4 border-t border-slate-100 bg-white space-y-3 text-[10px] leading-relaxed text-slate-600 font-medium">
-                <p className="text-slate-500 italic leading-relaxed">
-                  Our advanced diagnostic system continuously streams raw biometric data from your pairing device to compute clinically validated spinal markers:
-                </p>
-                <div className="space-y-2.5">
-                  <div className="p-2.5 bg-slate-50/50 border border-slate-100 rounded-xl space-y-1">
-                    <span className="font-black text-slate-800 uppercase block tracking-wider text-[8px]">1. Shoulder Balance</span>
-                    <p className="text-[9px] text-slate-600 leading-relaxed">
-                      Calculated dynamically from spinal inclination symmetry. If your alignment score is high (above {thresholds.good}%), we map high symmetry (95%-100%). Slumping below {thresholds.warn}% displays mild tilt or critical imbalance.
-                    </p>
-                  </div>
-                  <div className="p-2.5 bg-slate-50/50 border border-slate-100 rounded-xl space-y-1">
-                    <span className="font-black text-slate-800 uppercase block tracking-wider text-[8px]">2. Fatigue Risk</span>
-                    <p className="text-[9px] text-slate-600 leading-relaxed">
-                      Evaluated using the ratio of "incident sessions" (time spent slouching below {thresholds.warn}%) relative to the total continuous sitting duration stream to guard against lactic spasm traps.
-                    </p>
-                  </div>
-                  <div className="p-2.5 bg-slate-50/50 border border-slate-100 rounded-xl space-y-1">
-                    <span className="font-black text-slate-800 uppercase block tracking-wider text-[8px]">3. Focus Score & Time</span>
-                    <p className="text-[9px] text-slate-600 leading-relaxed">
-                      Upright alignment optimizes chest expansion and thoracic volume, preserving high blood oxygen saturation ($SpO_2$) and cerebral blood flow. This correlates mathematically to dynamic cognitive focus capacity (30% to 100%).
-                    </p>
-                  </div>
-                </div>
+      {/* SESSION RECORDS TAB */}
+      {activeTab === 'history' && (
+        <div className="space-y-4">
+          <div className="glass p-6 rounded-[36px] border border-slate-100 shadow-premium space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-base font-black text-slate-900">Recorded Posture Sessions</h3>
+                <p className="text-xs text-slate-500 font-medium">Synced with Local Storage & Firebase Firestore</p>
               </div>
-            </details>
-          </div>
-        </div>
-      </div>
+              <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
+                {recentSessions.length} Total Sessions
+              </span>
+            </div>
 
-      {/* Bottom-most Full-Width Section: Posture Trend Log */}
-      <div className="bg-white/80 backdrop-blur-md border border-slate-100 p-6 sm:p-7 rounded-[32px] shadow-soft space-y-4 text-left">
-        <div className="flex justify-between items-center pb-2.5 border-b border-slate-50">
-          <div>
-            <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">Posture Trend Log</h3>
-            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Live stream feed & real-time spinal inclination history</p>
+            {recentSessions.length === 0 ? (
+              <div className="py-12 text-center text-slate-400 space-y-2">
+                <Calendar size={32} className="mx-auto text-slate-300" />
+                <p className="text-xs font-bold">No saved posture sessions yet.</p>
+                <p className="text-[11px]">Start a session and tap "Save Log" to record posture data.</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {recentSessions.slice(0, 10).map((s, idx) => (
+                  <div key={s.id || idx} className="py-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-black text-slate-900">
+                        {new Date(s.date).toLocaleDateString()} at {new Date(s.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                      <div className="text-[11px] font-medium text-slate-500 mt-0.5">
+                        Duration: {formatDuration(s.duration)} • Slouches: {s.slouches}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-black text-indigo-600">{s.score}% Score</div>
+                      <span className={cn(
+                        "text-[9px] font-black uppercase px-2 py-0.5 rounded-full",
+                        s.score >= 80 ? "bg-emerald-50 text-emerald-700" : s.score >= 60 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"
+                      )}>
+                        {s.status || 'Recorded'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <span className="text-[8px] font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100 uppercase tracking-wider animate-pulse">
-            Live Stream Active
-          </span>
         </div>
-        <div className="h-36 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
-              <defs>
-                <linearGradient id="trendGradientBottom" x1="0" y1="0" x2="0" y2="100%">
-                  <stop offset="5%" stopColor={getStatusColor(angle)} stopOpacity={0.2}/>
-                  <stop offset="95%" stopColor={getStatusColor(angle)} stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <Area 
-                type="monotone" 
-                dataKey="angle" 
-                stroke={getStatusColor(angle)} 
-                strokeWidth={2.5} 
-                fillOpacity={1} 
-                fill="url(#trendGradientBottom)" 
-                animationDuration={800}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+      )}
     </div>
   );
 };
