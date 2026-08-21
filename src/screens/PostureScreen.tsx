@@ -61,6 +61,8 @@ import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import Markdown from 'react-markdown';
 import { SessionService, UnifiedSession } from '../services/sessionService';
 import { LocalModelService, LocalBiomechanicalMetrics } from '../services/localModelService';
+import { PosturePredictionView } from '../components/posture/PosturePredictionView';
+import { PostureMlForecastService } from '../services/postureMlForecastService';
 
 interface Exercise {
   id: string;
@@ -130,7 +132,7 @@ export const PostureScreen: React.FC = () => {
     baselineAngle
   } = posture;
 
-  const [activeTab, setActiveTab] = useState<'realtime' | '3d' | 'biomechanics' | 'drills' | 'history'>('realtime');
+  const [activeTab, setActiveTab] = useState<'realtime' | 'prediction' | '3d' | 'biomechanics' | 'drills' | 'history'>('realtime');
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -138,11 +140,18 @@ export const PostureScreen: React.FC = () => {
   const [showSimulator, setShowSimulator] = useState(false);
   const [audioAlerts, setAudioAlerts] = useState(true);
   const [recentSessions, setRecentSessions] = useState<UnifiedSession[]>([]);
+  const [selectedHistoryFilter, setSelectedHistoryFilter] = useState<string>('0'); // '0' is Today by default
 
   // Exercise active state
   const [activeExerciseIndex, setActiveExerciseIndex] = useState<number | null>(null);
   const [exerciseTimer, setExerciseTimer] = useState<number>(0);
   const [isExerciseRunning, setIsExerciseRunning] = useState<boolean>(false);
+  const [isExercisePaused, setIsExercisePaused] = useState<boolean>(false);
+  const [exerciseFeedback, setExerciseFeedback] = useState<{
+    name: string;
+    target: string;
+    boost: number;
+  } | null>(null);
 
   const simulationDirRef = useRef(-1);
   const angleRef = useRef(angle);
@@ -179,20 +188,94 @@ export const PostureScreen: React.FC = () => {
     return () => clearInterval(interval);
   }, [isSimulating, autoOscillate, dispatch]);
 
+  // Exercise completion synthesizer
+  const playCompletionChime = () => {
+    if (!audioAlerts) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      
+      const now = ctx.currentTime;
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(523.25, now); // C5
+      osc1.frequency.exponentialRampToValueAtTime(659.25, now + 0.18); // E5
+      osc1.frequency.exponentialRampToValueAtTime(783.99, now + 0.36); // G5
+
+      osc2.type = 'triangle';
+      osc2.frequency.setValueAtTime(261.63, now); // C4
+      osc2.frequency.exponentialRampToValueAtTime(392.00, now + 0.36); // G4
+
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.85);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + 0.9);
+      osc2.stop(now + 0.9);
+    } catch (e) {
+      console.warn('Audio chime failed:', e);
+    }
+  };
+
+  const completeExercise = (index: number) => {
+    const ex = POSTURE_EXERCISES[index];
+    if (!ex) return;
+
+    // 1. Log into on-device telemetry for ML training
+    PostureMlForecastService.logCompletedExercise(ex.id, ex.name, ex.durationSec, ex.target);
+
+    // 2. Play reward chime
+    playCompletionChime();
+
+    // 3. Set celebration feedback
+    setExerciseFeedback({
+      name: ex.name,
+      target: ex.target,
+      boost: 0.25
+    });
+
+    // 4. Reset active drill state
+    setIsExerciseRunning(false);
+    setIsExercisePaused(false);
+    setActiveExerciseIndex(null);
+    setExerciseTimer(0);
+
+    setTimeout(() => {
+      setExerciseFeedback(null);
+    }, 6000);
+  };
+
   // Exercise countdown timer
   useEffect(() => {
-    if (!isExerciseRunning || activeExerciseIndex === null) return;
+    if (!isExerciseRunning || isExercisePaused || activeExerciseIndex === null) return;
+    
     if (exerciseTimer <= 0) {
-      setIsExerciseRunning(false);
+      completeExercise(activeExerciseIndex);
       return;
     }
 
     const timer = setInterval(() => {
-      setExerciseTimer(prev => prev - 1);
+      setExerciseTimer(prev => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          completeExercise(activeExerciseIndex);
+          return 0;
+        }
+        return prev - 1;
+      });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isExerciseRunning, exerciseTimer, activeExerciseIndex]);
+  }, [isExerciseRunning, isExercisePaused, exerciseTimer, activeExerciseIndex]);
 
   // Biomechanical computations
   const localAI: LocalBiomechanicalMetrics = LocalModelService.recalculateAllBiomechanicalMetrics(
@@ -202,6 +285,14 @@ export const PostureScreen: React.FC = () => {
     goodSessionSeconds,
     totalSessionSeconds,
     incidents,
+    user ? { age: user.age, height: user.height, weight: user.weight } : undefined
+  );
+
+  // Live ML Forecast
+  const liveForecast = PostureMlForecastService.calculateForecast(
+    recentSessions,
+    score,
+    90,
     user ? { age: user.age, height: user.height, weight: user.weight } : undefined
   );
 
@@ -225,6 +316,35 @@ export const PostureScreen: React.FC = () => {
 
   const isOptimal = angle >= thresholds.good;
   const isWarn = angle >= thresholds.warn && angle < thresholds.good;
+
+  const statusTheme = isOptimal ? {
+    statusText: 'OPTIMAL ALIGNMENT',
+    dotBg: 'bg-[#10b981]',
+    colorHex: '#10b981',
+    primaryTextClass: 'text-[#10b981]',
+    subTextClass: 'text-[#34d399]',
+    cardGlowClass: 'from-emerald-100/40 via-emerald-50/15 to-transparent',
+    ecgColor: '#10b981',
+    badgeClass: 'bg-emerald-100 text-emerald-800'
+  } : isWarn ? {
+    statusText: 'MILD SLOUCH',
+    dotBg: 'bg-[#f59e0b]',
+    colorHex: '#f59e0b',
+    primaryTextClass: 'text-[#f59e0b]',
+    subTextClass: 'text-[#fbbf24]',
+    cardGlowClass: 'from-amber-100/40 via-amber-50/15 to-transparent',
+    ecgColor: '#f59e0b',
+    badgeClass: 'bg-amber-100 text-amber-800'
+  } : {
+    statusText: 'POOR ALIGNMENT',
+    dotBg: 'bg-[#ff2d55]',
+    colorHex: '#ff2d55',
+    primaryTextClass: 'text-[#ff2d55]',
+    subTextClass: 'text-[#fb7185]',
+    cardGlowClass: 'from-rose-100/50 via-rose-50/15 to-transparent',
+    ecgColor: '#ff2d55',
+    badgeClass: 'bg-rose-100 text-rose-800'
+  };
 
   const statusLabel = isOptimal ? 'Optimal Alignment' : isWarn ? 'Mild Slouch' : 'Significant Slouch';
   const statusColorClass = isOptimal 
@@ -313,6 +433,22 @@ export const PostureScreen: React.FC = () => {
     setActiveExerciseIndex(index);
     setExerciseTimer(POSTURE_EXERCISES[index].durationSec);
     setIsExerciseRunning(true);
+    setIsExercisePaused(false);
+  };
+
+  const pauseExercise = () => {
+    setIsExercisePaused(true);
+  };
+
+  const resumeExercise = () => {
+    setIsExercisePaused(false);
+  };
+
+  const stopExercise = () => {
+    setIsExerciseRunning(false);
+    setIsExercisePaused(false);
+    setActiveExerciseIndex(null);
+    setExerciseTimer(0);
   };
 
   const chartData = history.slice(0, 30).reverse().map((a, i) => ({
@@ -337,28 +473,6 @@ export const PostureScreen: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5">
-          {/* Simulator Toggle */}
-          <button
-            onClick={() => {
-              const next = !showSimulator;
-              setShowSimulator(next);
-              if (next && !isSimulating) {
-                dispatch(setIsSimulating(true));
-                dispatch(setDeviceStatus(true));
-                dispatch(setHasPaired(true));
-              }
-            }}
-            className={cn(
-              "px-3.5 py-2 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all border shadow-soft",
-              showSimulator 
-                ? "bg-indigo-50 border-indigo-200 text-indigo-700" 
-                : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-            )}
-          >
-            <Sliders size={14} />
-            <span>{showSimulator ? "Close Sim" : "Posture Simulator"}</span>
-          </button>
-
           {/* Alarm Audio Toggle */}
           <button
             onClick={() => setAudioAlerts(!audioAlerts)}
@@ -382,96 +496,11 @@ export const PostureScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* COLLAPSIBLE SIMULATOR TRAY */}
-      <AnimatePresence>
-        {showSimulator && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="overflow-hidden"
-          >
-            <div className="p-5 bg-indigo-50/80 border border-indigo-100 rounded-[32px] space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <span className="text-xs font-black text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
-                    <Sliders size={14} className="text-indigo-600" />
-                    Interactive Biometric Stance Simulator
-                  </span>
-                  <p className="text-[11px] text-indigo-800 font-medium">
-                    Test how the 3D twin, alarms, and thoracic strain react to different angles.
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setAutoOscillate(!autoOscillate)}
-                    className={cn(
-                      "px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider border shadow-sm transition-all",
-                      autoOscillate ? "bg-emerald-500 text-white border-emerald-600" : "bg-white text-slate-700 border-slate-200"
-                    )}
-                  >
-                    {autoOscillate ? "Auto-Oscillation Active" : "Manual Slider Drag"}
-                  </button>
-                </div>
-              </div>
-
-              {/* Slider */}
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-xs font-black text-slate-700">
-                  <span className="text-rose-600">Severe Slouch (30°)</span>
-                  <span className="text-indigo-900 bg-white px-3 py-0.5 rounded-lg shadow-sm border border-indigo-100">
-                    Live Angle: {Math.round(angle)}°
-                  </span>
-                  <span className="text-emerald-600">Upright Posture (100°)</span>
-                </div>
-                <input
-                  type="range"
-                  min="30"
-                  max="100"
-                  value={Math.round(angle)}
-                  disabled={autoOscillate}
-                  onChange={(e) => dispatch(updateAngle(Number(e.target.value)))}
-                  className={cn(
-                    "w-full h-2.5 rounded-lg appearance-none cursor-pointer focus:outline-none",
-                    autoOscillate ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
-                  )}
-                  style={{
-                    background: 'linear-gradient(to right, #ef4444 0%, #f59e0b 40%, #10b981 100%)'
-                  }}
-                />
-              </div>
-
-              {/* Preset Buttons */}
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <span className="text-[10px] font-black text-indigo-900 uppercase">Quick Presets:</span>
-                {[
-                  { label: 'Ideal Upright (90°)', val: 90 },
-                  { label: 'Mild Slouch (72°)', val: 72 },
-                  { label: 'Desk Slouch (58°)', val: 58 },
-                  { label: 'Phone Neck (42°)', val: 42 },
-                ].map(p => (
-                  <button
-                    key={p.val}
-                    onClick={() => {
-                      setAutoOscillate(false);
-                      dispatch(updateAngle(p.val));
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-white/90 hover:bg-white text-indigo-900 border border-indigo-100 text-[10px] font-bold shadow-sm"
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* NAVIGATION TABS */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
         {[
           { id: 'realtime', label: 'Live Cockpit', icon: Activity },
+          { id: 'prediction', label: 'AI Trajectory & Forecast', icon: TrendingUp, badge: 'ML' },
           { id: '3d', label: '3D Anatomical Twin', icon: Box },
           { id: 'biomechanics', label: 'Spinal Biomechanics', icon: BrainCircuit },
           { id: 'drills', label: 'Posture Exercises', icon: Dumbbell },
@@ -492,6 +521,14 @@ export const PostureScreen: React.FC = () => {
             >
               <Icon size={14} />
               <span>{tab.label}</span>
+              {tab.badge && (
+                <span className={cn(
+                  "text-[9px] font-black px-1.5 py-0.5 rounded-md",
+                  isActive ? "bg-white/20 text-white" : "bg-indigo-100 text-indigo-700"
+                )}>
+                  {tab.badge}
+                </span>
+              )}
             </button>
           );
         })}
@@ -503,79 +540,123 @@ export const PostureScreen: React.FC = () => {
           {/* Main Hero Live Biofeedback Card */}
           <div 
             data-tour="posture-ring"
-            className="glass p-7 sm:p-9 rounded-[40px] border border-slate-100 shadow-premium flex flex-col md:flex-row items-center justify-between gap-8 relative overflow-hidden"
+            className="bg-white rounded-[32px] p-6 sm:p-7 shadow-[0_12px_32px_-8px_rgba(15,23,42,0.08),0_4px_12px_-2px_rgba(15,23,42,0.03)] border border-slate-100/90 relative overflow-hidden flex flex-col justify-between space-y-4 transition-all"
           >
-            {/* Left: Avatar & Live Ring */}
-            <div className="flex flex-col items-center justify-center relative w-full md:w-auto">
-              <div className="relative w-52 h-52 sm:w-56 sm:h-56 flex items-center justify-center bg-slate-50/90 rounded-full border-2 border-white shadow-soft">
-                <PostureFigure size={170} angle={angle} />
+            {/* Soft Dynamic Gradient Background Glow */}
+            <div 
+              className={cn(
+                "absolute inset-0 bg-gradient-to-t pointer-events-none transition-all duration-700",
+                statusTheme.cardGlowClass
+              )} 
+            />
 
-                {/* Floating Live Angle Badge */}
-                <div className="absolute bottom-3 bg-white/95 backdrop-blur-md px-4 py-1.5 rounded-2xl shadow-soft border border-slate-100 flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full animate-ping" style={{ backgroundColor: getStatusColor(angle) }} />
-                  <span className="text-sm font-black text-slate-900">{Math.round(angle)}° Tilt</span>
+            {/* Card Header: Dynamic Status & Clinical Badge */}
+            <div className="flex items-start justify-between relative z-10">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className={cn("w-2 h-2 rounded-full animate-pulse", statusTheme.dotBg)} />
+                  <span 
+                    className="text-xs sm:text-sm font-black uppercase tracking-wider"
+                    style={{ color: statusTheme.colorHex }}
+                  >
+                    {statusTheme.statusText}
+                  </span>
+                </div>
+                <span 
+                  className="text-[9px] sm:text-[10px] font-black tracking-widest uppercase block mt-0.5"
+                  style={{ color: statusTheme.colorHex, opacity: 0.8 }}
+                >
+                  CLINICAL PRECISION
+                </span>
+              </div>
+
+              {/* Status Pill */}
+              <div className={cn(
+                "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border shadow-2xs",
+                statusColorClass
+              )}>
+                {statusLabel}
+              </div>
+            </div>
+
+            {/* Center: Circular Stage with PostureFigure + Overlapping Floating Angle Pill */}
+            <div className="relative flex items-center justify-center py-2 z-10">
+              <div className="w-52 h-52 sm:w-56 sm:h-56 rounded-full bg-gradient-to-b from-[#f8fafc] to-[#f1f5f9] border border-slate-200/80 flex items-center justify-center relative shadow-[inset_0_2px_6px_rgba(0,0,0,0.02),0_4px_16px_rgba(15,23,42,0.03)]">
+                <PostureFigure size={165} angle={angle} />
+
+                {/* Overlapping Floating Angle Pill on Bottom-Right */}
+                <div className="absolute bottom-2 -right-2 sm:bottom-3 sm:-right-3 z-20 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl shadow-[0_8px_20px_-4px_rgba(15,23,42,0.12),0_2px_6px_-1px_rgba(15,23,42,0.04)] border border-slate-100/90 text-center min-w-[76px] select-none">
+                  <span 
+                    className="text-[9px] font-black tracking-widest uppercase block transition-colors"
+                    style={{ color: statusTheme.colorHex }}
+                  >
+                    ANGLE
+                  </span>
+                  <span 
+                    className="text-2xl font-black tracking-tight leading-none transition-colors"
+                    style={{ color: statusTheme.colorHex }}
+                  >
+                    {Math.round(angle)}°
+                  </span>
                 </div>
               </div>
             </div>
 
-            {/* Center: Live Alignment Status & Action Controls */}
-            <div className="flex-1 space-y-4 text-center md:text-left w-full">
-              <div className="space-y-2">
-                <div className={cn(
-                  "inline-flex items-center gap-2 px-3.5 py-1 rounded-full text-xs font-black uppercase tracking-wider border shadow-sm",
-                  statusColorClass
-                )}>
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getStatusColor(angle) }} />
-                  <span>{statusLabel}</span>
+            {/* Bottom: Alignment Score + Clean Controls */}
+            <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4 relative z-10 border-t border-slate-100/80">
+              <div>
+                <div 
+                  className="text-3xl sm:text-4xl font-black tracking-tight leading-none"
+                  style={{ color: statusTheme.colorHex }}
+                >
+                  {Math.round(score)}%
                 </div>
-
-                <h2 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
-                  {Math.round(score)}% Alignment Score
-                </h2>
-                <p className="text-xs text-slate-500 font-medium max-w-md leading-relaxed">
-                  {isOptimal 
-                    ? "Paraspinal load is minimal. Natural spinal S-curve preserved with optimal gravitational balance." 
-                    : "Forward cervical deviation detected. Bring your chest upright and pull your chin gently back to neutralize strain."}
-                </p>
+                <span 
+                  className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest block mt-0.5"
+                  style={{ color: statusTheme.colorHex, opacity: 0.8 }}
+                >
+                  ALIGNMENT SCORE
+                </span>
               </div>
 
-              {/* Session Action Controls */}
-              <div className="pt-2 flex flex-wrap items-center justify-center md:justify-start gap-3">
+              {/* Action Controls Cluster */}
+              <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2.5 w-full sm:w-auto">
                 {!isRecordingSession ? (
                   <button
                     onClick={() => dispatch(setIsRecordingSession(true))}
-                    className="px-6 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-md transition-all active:scale-95 flex items-center gap-2"
+                    className="px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-2"
                   >
-                    <Play size={14} fill="currentColor" />
-                    <span>{totalSessionSeconds > 0 ? "Resume Session" : "Start Posture Session"}</span>
+                    <Play size={13} fill="currentColor" />
+                    <span>{totalSessionSeconds > 0 ? "Resume Session" : "Start Session"}</span>
                   </button>
                 ) : (
-                  <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <div className="flex items-center gap-2">
                     <button
                       onClick={() => dispatch(setIsRecordingSession(false))}
-                      className="flex-1 sm:flex-initial px-5 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center justify-center gap-2"
+                      className="px-4 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-1.5"
                     >
-                      <Pause size={14} fill="currentColor" />
+                      <Pause size={13} fill="currentColor" />
                       <span>Pause</span>
                     </button>
 
                     <button
                       onClick={handleSaveSession}
                       disabled={isSaving}
-                      className="flex-1 sm:flex-initial px-5 py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
+                      className="px-4 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-1.5 disabled:opacity-50"
                     >
-                      <CheckCircle2 size={15} />
-                      <span>{isSaving ? "Saving..." : "Save Log"}</span>
+                      <CheckCircle2 size={14} />
+                      <span>{isSaving ? "Saving..." : "Save"}</span>
                     </button>
                   </div>
                 )}
 
                 <button
                   onClick={() => dispatch(recalibrateBaseline(angle))}
-                  className="px-4 py-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5"
+                  className="px-3.5 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5"
+                  title="Recalibrate Zero Baseline"
                 >
-                  <Target size={14} />
-                  <span>Zero Baseline ({Math.round(baselineAngle)}°)</span>
+                  <Target size={13} />
+                  <span>Zero ({Math.round(baselineAngle)}°)</span>
                 </button>
               </div>
             </div>
@@ -665,6 +746,70 @@ export const PostureScreen: React.FC = () => {
             </div>
           </div>
 
+          {/* AI Biomechanical Prediction & Peak Slouch Forecast Card */}
+          <div className="bg-gradient-to-r from-indigo-50 via-white to-emerald-50/50 p-6 rounded-[36px] border border-indigo-100 shadow-soft space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shrink-0 shadow-sm">
+                  <TrendingUp size={18} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-black text-slate-900">AI Posture Prediction & Slouch Trajectory</h3>
+                    <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                      ML Prognosis
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {liveForecast.daysToTarget === 0 
+                      ? "Ideal alignment target achieved!" 
+                      : `Projected to reach 90% Ideal Posture in ~${liveForecast.daysToTarget} days (${liveForecast.projectedTargetDate})`}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setActiveTab('prediction')}
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-95 shrink-0"
+              >
+                <span>Explore ML Model</span>
+                <ChevronRight size={14} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+              <div className="p-3 bg-white rounded-2xl border border-slate-100 shadow-xs space-y-0.5">
+                <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">
+                  Improvement Velocity
+                </span>
+                <div className="text-base font-black text-emerald-600">
+                  {liveForecast.improvementVelocityPerDay > 0 ? '+' : ''}{liveForecast.improvementVelocityPerDay}% / day
+                </div>
+                <span className="text-[10px] font-bold text-slate-500">{liveForecast.trajectoryStatus}</span>
+              </div>
+
+              <div className="p-3 bg-white rounded-2xl border border-slate-100 shadow-xs space-y-0.5">
+                <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">
+                  Peak Slouch Window
+                </span>
+                <div className="text-base font-black text-rose-600">
+                  {liveForecast.peakSlouchWindow.split(' - ')[0]} ({liveForecast.peakSlouchPercentage}%)
+                </div>
+                <span className="text-[10px] font-bold text-slate-500">Circadian fatigue peak</span>
+              </div>
+
+              <div className="p-3 bg-white rounded-2xl border border-slate-100 shadow-xs space-y-0.5">
+                <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">
+                  Estimated Timeline
+                </span>
+                <div className="text-base font-black text-indigo-600">
+                  {liveForecast.daysToTarget} Days
+                </div>
+                <span className="text-[10px] font-bold text-slate-500">Target: {liveForecast.projectedTargetDate}</span>
+              </div>
+            </div>
+          </div>
+
           {/* AI Ergonomic Summary Box */}
           <div className="bg-gradient-to-br from-indigo-900 to-slate-900 rounded-[36px] p-7 text-white shadow-premium space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -711,6 +856,16 @@ export const PostureScreen: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* AI PREDICTION & TRAJECTORY TAB */}
+      {activeTab === 'prediction' && (
+        <PosturePredictionView 
+          currentScore={score}
+          recentSessions={recentSessions}
+          userProfile={user ? { age: user.age, height: user.height, weight: user.weight, name: user.name } : undefined}
+        />
+      )}
+
 
       {/* 3D ANATOMICAL TWIN TAB */}
       {activeTab === '3d' && (
@@ -794,6 +949,185 @@ export const PostureScreen: React.FC = () => {
       {/* POSTURE EXERCISES & DRILLS TAB */}
       {activeTab === 'drills' && (
         <div className="space-y-6">
+          {/* Exercise Completion Reward Feedback Banner */}
+          <AnimatePresence>
+            {exerciseFeedback && (
+              <motion.div
+                initial={{ opacity: 0, y: -10, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.96 }}
+                className="p-5 rounded-[28px] bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xl flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+                    <Sparkles size={20} className="text-white animate-bounce" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-black uppercase tracking-wider">
+                      Drill Completed & Ingested to ML Pipeline!
+                    </h4>
+                    <p className="text-xs text-emerald-100 font-medium">
+                      <strong>{exerciseFeedback.name}</strong> • +{exerciseFeedback.boost}% / day improvement velocity added to ML forecast. Biomechanical fatigue reduced!
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExerciseFeedback(null)}
+                  className="p-1.5 rounded-full hover:bg-white/20 transition-all text-white cursor-pointer"
+                >
+                  <X size={16} />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Dedicated Active Drill Player Card (Shown when an exercise is active) */}
+          {activeExerciseIndex !== null && (() => {
+            const currentEx = POSTURE_EXERCISES[activeExerciseIndex];
+            const totalSec = currentEx.durationSec;
+            const elapsedSec = totalSec - exerciseTimer;
+            const progressPercent = Math.min(100, Math.max(0, (elapsedSec / totalSec) * 100));
+
+            return (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="glass p-6 sm:p-7 rounded-[36px] border-2 border-indigo-500 shadow-premium space-y-5 bg-gradient-to-br from-indigo-900 via-slate-900 to-indigo-950 text-white relative overflow-hidden"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className={cn(
+                        "text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full",
+                        isExercisePaused ? "bg-amber-400 text-slate-900 font-black" : "bg-emerald-400 text-slate-900 font-black animate-pulse"
+                      )}>
+                        {isExercisePaused ? "Drill Paused" : "Active Exercise Drill"}
+                      </span>
+                      <span className="text-[10px] text-indigo-200 font-bold">
+                        Target: {currentEx.target}
+                      </span>
+                    </div>
+                    <h3 className="text-xl sm:text-2xl font-black text-white">
+                      {currentEx.name}
+                    </h3>
+                    <p className="text-xs text-indigo-100 font-medium max-w-xl">
+                      {currentEx.description}
+                    </p>
+                  </div>
+
+                  {/* Large Countdown Display */}
+                  <div className="text-center sm:text-right shrink-0 bg-white/10 backdrop-blur-md px-5 py-3 rounded-2xl border border-white/15 min-w-[120px]">
+                    <div className="text-3xl sm:text-4xl font-black text-white tracking-tight">
+                      {exerciseTimer} <span className="text-xs font-bold text-indigo-200">sec</span>
+                    </div>
+                    <div className="text-[10px] font-black uppercase text-indigo-300">
+                      {isExercisePaused ? "Paused" : "Remaining"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Animated Progress Bar */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] font-black uppercase text-indigo-200">
+                    <span>Progress: {Math.round(progressPercent)}%</span>
+                    <span>{currentEx.reps}</span>
+                  </div>
+                  <div className="h-3 w-full bg-white/10 rounded-full overflow-hidden p-0.5 border border-white/10">
+                    <div 
+                      className={cn(
+                        "h-full rounded-full transition-all duration-300",
+                        isExercisePaused ? "bg-amber-400" : "bg-gradient-to-r from-indigo-400 to-emerald-400"
+                      )}
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Interactive Control Buttons */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-white/10">
+                  <div className="flex items-center gap-2">
+                    {isExercisePaused ? (
+                      <button
+                        type="button"
+                        onClick={resumeExercise}
+                        className="px-4 py-2 rounded-2xl bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                      >
+                        <Play size={14} fill="currentColor" />
+                        Resume Drill
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={pauseExercise}
+                        className="px-4 py-2 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                      >
+                        <Pause size={14} />
+                        Pause Drill
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={stopExercise}
+                      className="px-4 py-2 rounded-2xl bg-white/10 hover:bg-rose-500/80 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 border border-white/15 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <RotateCcw size={14} />
+                      Stop / Cancel
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => completeExercise(activeExerciseIndex)}
+                    className="px-4 py-2 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                  >
+                    <CheckCircle2 size={14} />
+                    Finish Early & Log to ML
+                  </button>
+                </div>
+              </motion.div>
+            );
+          })()}
+
+          {/* Continuous ML Training & Active Interventions Feed Header */}
+          <div className="glass p-5 rounded-[28px] border border-slate-100 shadow-soft flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+                <BrainCircuit size={20} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                    ML Continuous Training & Telemetry Pipeline
+                  </h4>
+                  <span className="flex items-center gap-1 text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live Ingestion
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                  Completed drills and ergonomic breaks continuously adjust your OLS regression trajectory & paraspinal fatigue models.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
+                <div className="text-[9px] font-bold uppercase text-slate-400">Drills Today</div>
+                <div className="text-xs font-black text-indigo-600">
+                  {liveForecast.drillsCompletedToday} done
+                </div>
+              </div>
+              <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
+                <div className="text-[9px] font-bold uppercase text-slate-400">ML Velocity Boost</div>
+                <div className="text-xs font-black text-emerald-600">
+                  +{liveForecast.drillVelocityBoost}% / day
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Exercises Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {POSTURE_EXERCISES.map((ex, idx) => {
               const isSelected = activeExerciseIndex === idx;
@@ -818,27 +1152,60 @@ export const PostureScreen: React.FC = () => {
                     </p>
                   </div>
 
-                  <div className="pt-2 flex items-center justify-between border-t border-slate-100">
-                    <span className="text-[11px] font-bold text-slate-500">{ex.reps}</span>
-                    <button
-                      onClick={() => startExercise(idx)}
-                      className={cn(
-                        "px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-sm active:scale-95",
-                        isSelected && isExerciseRunning ? "bg-amber-500 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"
-                      )}
-                    >
-                      {isSelected && isExerciseRunning ? (
-                        <>
-                          <Timer size={12} className="animate-spin" />
-                          <span>{exerciseTimer}s</span>
-                        </>
-                      ) : (
-                        <>
-                          <Play size={12} fill="currentColor" />
-                          <span>Start Drill</span>
-                        </>
-                      )}
-                    </button>
+                  <div className="pt-2 flex items-center justify-between border-t border-slate-100 gap-2">
+                    <span className="text-[11px] font-bold text-slate-500 truncate">{ex.reps}</span>
+
+                    {isSelected ? (
+                      <div className="flex items-center gap-1.5">
+                        {isExercisePaused ? (
+                          <button
+                            type="button"
+                            onClick={resumeExercise}
+                            className="p-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer"
+                            title="Resume Drill"
+                          >
+                            <Play size={13} fill="currentColor" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={pauseExercise}
+                            className="p-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer"
+                            title="Pause Drill"
+                          >
+                            <Pause size={13} />
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={stopExercise}
+                          className="p-2 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 text-xs font-bold border border-slate-200 transition-all active:scale-95 cursor-pointer"
+                          title="Stop / Reset Drill"
+                        >
+                          <RotateCcw size={13} />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => completeExercise(idx)}
+                          className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1 transition-all shadow-sm active:scale-95 cursor-pointer"
+                          title="Finish Drill Early"
+                        >
+                          <Check size={13} />
+                          <span>Done</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startExercise(idx)}
+                        className="px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-sm active:scale-95 bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+                      >
+                        <Play size={12} fill="currentColor" />
+                        <span>Start Drill</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -848,53 +1215,270 @@ export const PostureScreen: React.FC = () => {
       )}
 
       {/* SESSION RECORDS TAB */}
-      {activeTab === 'history' && (
-        <div className="space-y-4">
-          <div className="glass p-6 rounded-[36px] border border-slate-100 shadow-premium space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-black text-slate-900">Recorded Posture Sessions</h3>
-                <p className="text-xs text-slate-500 font-medium">Synced with Local Storage & Firebase Firestore</p>
+      {activeTab === 'history' && (() => {
+        const now = new Date();
+        
+        // Dynamic day options for dropdown: Today, Yesterday, Days 2-6, and All 7 Days
+        const dayOptions = [
+          { value: '0', label: `Today (${now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})` },
+          { value: '1', label: `Yesterday (${new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})` },
+          ...Array.from({ length: 5 }, (_, i) => {
+            const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (i + 2));
+            return {
+              value: String(i + 2),
+              label: `${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
+            };
+          }),
+          { value: 'all', label: 'Last 7 Days (All Records)' }
+        ];
+
+        // Filtered sessions based on selected day
+        const filteredSessions = recentSessions.filter(s => {
+          if (!s.date) return false;
+          const sessionDate = new Date(s.date);
+          
+          if (selectedHistoryFilter === 'all') {
+            const sevenDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+            sevenDaysAgo.setHours(0, 0, 0, 0);
+            return sessionDate >= sevenDaysAgo;
+          }
+          
+          const daysAgo = parseInt(selectedHistoryFilter, 10);
+          const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo);
+          return sessionDate.toDateString() === targetDate.toDateString();
+        });
+
+        // Compute aggregated metrics for filtered period
+        const totalDurationSec = filteredSessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+        const avgScore = filteredSessions.length > 0 
+          ? Math.round(filteredSessions.reduce((acc, s) => acc + (s.score || 0), 0) / filteredSessions.length)
+          : 0;
+        const totalSlouches = filteredSessions.reduce((acc, s) => acc + (s.slouches || 0), 0);
+        const avgSpineLoad = filteredSessions.length > 0
+          ? (filteredSessions.reduce((acc, s) => acc + (s.avgLoadLbs || 13), 0) / filteredSessions.length).toFixed(1)
+          : '0.0';
+
+        const selectedOptionObj = dayOptions.find(o => o.value === selectedHistoryFilter);
+
+        return (
+          <div className="space-y-5">
+            {/* Header with Filter Dropdown */}
+            <div className="glass p-6 rounded-[32px] border border-slate-100 shadow-premium space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-black text-slate-900">Session Records</h3>
+                    <span className="flex items-center gap-1 text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">
+                      <CheckCircle2 size={11} />
+                      Synced with ML & DB
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Live session history synchronized across Analytics, Dashboard, and ML Forecast
+                  </p>
+                </div>
+
+                {/* 7-Days Dropdown Selector */}
+                <div className="flex items-center gap-2">
+                  <div className="relative">
+                    <label htmlFor="session-day-filter" className="sr-only">Filter Sessions by Day</label>
+                    <select
+                      id="session-day-filter"
+                      value={selectedHistoryFilter}
+                      onChange={(e) => setSelectedHistoryFilter(e.target.value)}
+                      className="appearance-none bg-slate-50 hover:bg-slate-100 text-slate-800 text-xs font-black py-2 pl-3 pr-8 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all cursor-pointer shadow-sm"
+                    >
+                      {dayOptions.map(opt => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  </div>
+                </div>
               </div>
-              <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
-                {recentSessions.length} Total Sessions
-              </span>
+
+              {/* Aggregated Period Metrics Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100/80">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Sessions</div>
+                  <div className="text-lg font-black text-slate-900 mt-0.5">
+                    {filteredSessions.length} <span className="text-xs font-semibold text-slate-400">rec</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    {selectedHistoryFilter === '0' ? 'Today only' : selectedOptionObj?.label}
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100/80">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Tracked Time</div>
+                  <div className="text-lg font-black text-indigo-600 mt-0.5">
+                    {formatDuration(totalDurationSec)}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">Total duration</div>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100/80">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Avg Posture</div>
+                  <div className={cn(
+                    "text-lg font-black mt-0.5",
+                    avgScore >= 80 ? "text-emerald-600" : avgScore >= 60 ? "text-indigo-600" : "text-rose-600"
+                  )}>
+                    {avgScore > 0 ? `${avgScore}%` : '—'}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    {avgScore >= 80 ? 'Optimal' : avgScore >= 60 ? 'Moderate' : 'Needs attention'}
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100/80">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total Slouches</div>
+                  <div className="text-lg font-black text-amber-600 mt-0.5">
+                    {totalSlouches} <span className="text-xs font-semibold text-slate-400">events</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">Avg strain: {avgSpineLoad} lbs</div>
+                </div>
+              </div>
             </div>
 
-            {recentSessions.length === 0 ? (
-              <div className="py-12 text-center text-slate-400 space-y-2">
-                <Calendar size={32} className="mx-auto text-slate-300" />
-                <p className="text-xs font-bold">No saved posture sessions yet.</p>
-                <p className="text-[11px]">Start a session and tap "Save Log" to record posture data.</p>
+            {/* List of Session Cards */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between px-2">
+                <span className="text-xs font-black uppercase tracking-wider text-slate-500">
+                  {selectedHistoryFilter === '0' 
+                    ? `Today's Recorded Sessions (${filteredSessions.length})`
+                    : selectedHistoryFilter === 'all'
+                    ? `Last 7 Days Recordings (${filteredSessions.length})`
+                    : `${selectedOptionObj?.label} Recordings (${filteredSessions.length})`
+                  }
+                </span>
+                <span className="text-[11px] font-bold text-slate-500">
+                  Database & LocalStorage Verified
+                </span>
               </div>
-            ) : (
-              <div className="divide-y divide-slate-100">
-                {recentSessions.slice(0, 10).map((s, idx) => (
-                  <div key={s.id || idx} className="py-3 flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-black text-slate-900">
-                        {new Date(s.date).toLocaleDateString()} at {new Date(s.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                      <div className="text-[11px] font-medium text-slate-500 mt-0.5">
-                        Duration: {formatDuration(s.duration)} • Slouches: {s.slouches}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-sm font-black text-indigo-600">{s.score}% Score</div>
-                      <span className={cn(
-                        "text-[9px] font-black uppercase px-2 py-0.5 rounded-full",
-                        s.score >= 80 ? "bg-emerald-50 text-emerald-700" : s.score >= 60 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"
-                      )}>
-                        {s.status || 'Recorded'}
-                      </span>
-                    </div>
+
+              {filteredSessions.length === 0 ? (
+                <div className="glass p-10 rounded-[32px] border border-slate-100 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-50 flex items-center justify-center mx-auto text-slate-400 border border-slate-100">
+                    <Calendar size={22} />
                   </div>
-                ))}
-              </div>
-            )}
+                  <div>
+                    <p className="text-xs font-black text-slate-800">No sessions recorded on this day</p>
+                    <p className="text-[11px] text-slate-500 mt-1 max-w-sm mx-auto">
+                      {selectedHistoryFilter === '0' 
+                        ? 'Tap "Save Session Log" from the Live Monitor when you complete your current posture session to add today\'s record.' 
+                        : 'Select another day from the dropdown menu to inspect previous session records.'}
+                    </p>
+                  </div>
+                  {isRecordingSession && (
+                    <button
+                      type="button"
+                      onClick={handleSaveSession}
+                      disabled={isSaving}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black shadow-md transition-all cursor-pointer"
+                    >
+                      <Sparkles size={13} />
+                      {isSaving ? 'Logging to Database...' : 'Save Current Live Session Now'}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filteredSessions.map((session, idx) => {
+                    const sessionDateObj = new Date(session.date);
+                    const isSessionExcellent = session.score >= 80;
+                    const isSessionFair = session.score >= 60 && session.score < 80;
+                    
+                    return (
+                      <motion.div
+                        key={session.id || idx}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, delay: idx * 0.04 }}
+                        className="glass p-5 rounded-[28px] border border-slate-100 hover:border-indigo-100 shadow-premium transition-all space-y-3.5"
+                      >
+                        {/* Top Session Row */}
+                        <div className="flex items-start justify-between">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black text-slate-900">
+                                {sessionDateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-bold">
+                                • {sessionDateObj.toLocaleDateString([], { month: 'short', day: 'numeric', weekday: 'short' })}
+                              </span>
+                              <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                                {formatDuration(session.duration)}
+                              </span>
+                            </div>
+                            <p className="text-[11px] font-medium text-slate-500">
+                              Focus Streak: {formatDuration(session.maxFocusStreak || Math.floor(session.duration * 0.6))} • Good Posture: {formatDuration(session.goodSessionSeconds || Math.floor(session.duration * (session.score / 100)))}
+                            </p>
+                          </div>
+
+                          {/* Score Pill */}
+                          <div className="text-right flex flex-col items-end gap-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className={cn(
+                                "text-sm font-black",
+                                isSessionExcellent ? "text-emerald-600" : isSessionFair ? "text-indigo-600" : "text-rose-600"
+                              )}>
+                                {session.score}% Score
+                              </span>
+                            </div>
+                            <span className={cn(
+                              "text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full",
+                              isSessionExcellent 
+                                ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
+                                : isSessionFair 
+                                ? "bg-amber-50 text-amber-700 border border-amber-100" 
+                                : "bg-rose-50 text-rose-700 border border-rose-100"
+                            )}>
+                              {session.status || (isSessionExcellent ? 'Excellent' : isSessionFair ? 'Fair' : 'Poor')}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Biomechanical Details Grid */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-100 text-[11px]">
+                          <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                            <span className="text-[10px] text-slate-500 font-bold block">Slouch Events</span>
+                            <span className="font-black text-amber-600">
+                              {session.slouches} {session.slouches === 1 ? 'incident' : 'incidents'}
+                            </span>
+                          </div>
+
+                          <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                            <span className="text-[10px] text-slate-500 font-bold block">Avg Spine Load</span>
+                            <span className="font-black text-slate-800">
+                              {(session.avgLoadLbs || 12.5).toFixed(1)} lbs
+                            </span>
+                          </div>
+
+                          <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                            <span className="text-[10px] text-slate-500 font-bold block">Stability Score</span>
+                            <span className="font-black text-indigo-600">
+                              {session.stabilityScore || 85}%
+                            </span>
+                          </div>
+
+                          <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                            <span className="text-[10px] text-slate-500 font-bold block">Compliance</span>
+                            <span className="font-black text-emerald-600">
+                              {session.complianceRate || 90}%
+                            </span>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

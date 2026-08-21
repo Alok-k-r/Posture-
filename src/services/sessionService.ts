@@ -135,10 +135,15 @@ export const SessionService = {
       }
     }
 
-    // 3. Sort Descending by Date
+    // 3. If no sessions exist in local or Firestore, return empty array without seeding dummy data
+    if (mergedList.length === 0) {
+      return [];
+    }
+
+    // 4. Sort Descending by Date
     mergedList.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-    // 4. Cache back to LocalStorage for instant sync across all services
+    // 5. Cache back to LocalStorage for instant sync across all services
     this.updateLocalStorageCache(userId, mergedList);
 
     return mergedList;
@@ -202,15 +207,17 @@ export const SessionService = {
     console.log('🌱 Seeding realistic multi-day session data into Firestore and LocalStorage for user:', userId);
 
     const now = new Date();
+    
+    // Seed realistic daily sessions covering the last 7 calendar days
     const mockSessions: Partial<UnifiedSession>[] = [
-      // Today session
+      // Day 0: Today (Session 1 - Afternoon)
       {
-        date: new Date(now.getTime() - 2 * 3600 * 1000).toISOString(),
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 14, 15, 0).toISOString(),
         duration: 2400, // 40 mins
         score: 88,
         slouches: 3,
-        goodSessionSeconds: 2160,
-        warnSessionSeconds: 240,
+        goodSessionSeconds: 2112,
+        warnSessionSeconds: 288,
         maxFocusStreak: 1200,
         status: 'Excellent',
         avgLoadLbs: 12.5,
@@ -219,14 +226,30 @@ export const SessionService = {
         stabilityScore: 89,
         complianceRate: 92
       },
-      // Yesterday session
+      // Day 0: Today (Session 2 - Morning)
       {
-        date: new Date(now.getTime() - 26 * 3600 * 1000).toISOString(),
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 10, 30, 0).toISOString(),
+        duration: 1800, // 30 mins
+        score: 85,
+        slouches: 2,
+        goodSessionSeconds: 1530,
+        warnSessionSeconds: 270,
+        maxFocusStreak: 950,
+        status: 'Excellent',
+        avgLoadLbs: 13.1,
+        peakLoadLbs: 25.0,
+        fatigueScore: 16,
+        stabilityScore: 88,
+        complianceRate: 90
+      },
+      // Day 1: Yesterday
+      {
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 15, 0, 0).toISOString(),
         duration: 3600, // 60 mins
         score: 82,
         slouches: 5,
-        goodSessionSeconds: 3100,
-        warnSessionSeconds: 500,
+        goodSessionSeconds: 2952,
+        warnSessionSeconds: 648,
         maxFocusStreak: 1500,
         status: 'Fair',
         avgLoadLbs: 16.2,
@@ -235,14 +258,30 @@ export const SessionService = {
         stabilityScore: 81,
         complianceRate: 85
       },
-      // 3 days ago session
+      // Day 2: 2 days ago
       {
-        date: new Date(now.getTime() - 72 * 3600 * 1000).toISOString(),
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2, 11, 45, 0).toISOString(),
+        duration: 4200, // 70 mins
+        score: 90,
+        slouches: 2,
+        goodSessionSeconds: 3780,
+        warnSessionSeconds: 420,
+        maxFocusStreak: 1800,
+        status: 'Excellent',
+        avgLoadLbs: 11.5,
+        peakLoadLbs: 22.0,
+        fatigueScore: 14,
+        stabilityScore: 91,
+        complianceRate: 94
+      },
+      // Day 3: 3 days ago
+      {
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 3, 16, 20, 0).toISOString(),
         duration: 4800, // 80 mins
         score: 91,
         slouches: 2,
-        goodSessionSeconds: 4400,
-        warnSessionSeconds: 400,
+        goodSessionSeconds: 4368,
+        warnSessionSeconds: 432,
         maxFocusStreak: 2100,
         status: 'Excellent',
         avgLoadLbs: 11.8,
@@ -251,14 +290,30 @@ export const SessionService = {
         stabilityScore: 92,
         complianceRate: 95
       },
-      // 5 days ago session
+      // Day 4: 4 days ago
       {
-        date: new Date(now.getTime() - 120 * 3600 * 1000).toISOString(),
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 4, 13, 10, 0).toISOString(),
+        duration: 2700, // 45 mins
+        score: 79,
+        slouches: 6,
+        goodSessionSeconds: 2133,
+        warnSessionSeconds: 567,
+        maxFocusStreak: 850,
+        status: 'Fair',
+        avgLoadLbs: 18.0,
+        peakLoadLbs: 35.0,
+        fatigueScore: 32,
+        stabilityScore: 78,
+        complianceRate: 79
+      },
+      // Day 5: 5 days ago
+      {
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 5, 14, 0, 0).toISOString(),
         duration: 1800, // 30 mins
-        score: 74,
+        score: 75,
         slouches: 7,
-        goodSessionSeconds: 1300,
-        warnSessionSeconds: 500,
+        goodSessionSeconds: 1350,
+        warnSessionSeconds: 450,
         maxFocusStreak: 600,
         status: 'Fair',
         avgLoadLbs: 21.0,
@@ -267,20 +322,20 @@ export const SessionService = {
         stabilityScore: 72,
         complianceRate: 70
       },
-      // 8 days ago session
+      // Day 6: 6 days ago
       {
-        date: new Date(now.getTime() - 192 * 3600 * 1000).toISOString(),
+        date: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6, 10, 0, 0).toISOString(),
         duration: 3000, // 50 mins
-        score: 85,
+        score: 86,
         slouches: 4,
-        goodSessionSeconds: 2600,
-        warnSessionSeconds: 400,
+        goodSessionSeconds: 2580,
+        warnSessionSeconds: 420,
         maxFocusStreak: 1400,
         status: 'Excellent',
-        avgLoadLbs: 14.0,
-        peakLoadLbs: 28.0,
-        fatigueScore: 22,
-        stabilityScore: 84,
+        avgLoadLbs: 13.8,
+        peakLoadLbs: 27.0,
+        fatigueScore: 21,
+        stabilityScore: 85,
         complianceRate: 88
       }
     ];
@@ -343,6 +398,89 @@ export const SessionService = {
     }
 
     return this.fetchUnifiedSessions(activeUid);
+  },
+
+  /**
+   * Mathematically compute user's consecutive day streak from real recorded sessions.
+   * If a user recorded a session today, streak counts from today.
+   * If a user has 0 sessions today but recorded yesterday, the active streak from yesterday remains intact.
+   * If no session was recorded yesterday or today, the streak is 0.
+   */
+  calculateRealStreak(sessions: UnifiedSession[]): { current: number; longest: number } {
+    if (!sessions || sessions.length === 0) {
+      return { current: 0, longest: 0 };
+    }
+
+    // Get unique valid dates (YYYY-MM-DD)
+    const dateMap = new Map<string, boolean>();
+    sessions.forEach(s => {
+      if (s.date && (s.duration > 0 || s.score > 0)) {
+        const d = new Date(s.date);
+        if (!isNaN(d.getTime())) {
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          dateMap.set(key, true);
+        }
+      }
+    });
+
+    const uniqueDates = Array.from(dateMap.keys()).sort().reverse();
+    if (uniqueDates.length === 0) return { current: 0, longest: 0 };
+
+    const today = new Date();
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+
+    let currentStreak = 0;
+    let checkDate: Date | null = null;
+
+    if (dateMap.has(todayKey)) {
+      checkDate = new Date(today);
+    } else if (dateMap.has(yesterdayKey)) {
+      checkDate = new Date(yesterday);
+    }
+
+    if (checkDate) {
+      while (true) {
+        const key = `${checkDate.getFullYear()}-${String(checkDate.getMonth() + 1).padStart(2, '0')}-${String(checkDate.getDate()).padStart(2, '0')}`;
+        if (dateMap.has(key)) {
+          currentStreak++;
+          checkDate.setDate(checkDate.getDate() - 1);
+        } else {
+          break;
+        }
+      }
+    }
+
+    // Longest historical consecutive streak
+    const sortedAsc = Array.from(dateMap.keys()).sort();
+    let longestStreak = 0;
+    let tempStreak = 0;
+    for (let i = 0; i < sortedAsc.length; i++) {
+      if (i === 0) {
+        tempStreak = 1;
+      } else {
+        const prev = new Date(sortedAsc[i - 1]);
+        const curr = new Date(sortedAsc[i]);
+        const diffDays = Math.round((curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays === 1) {
+          tempStreak++;
+        } else {
+          tempStreak = 1;
+        }
+      }
+      if (tempStreak > longestStreak) {
+        longestStreak = tempStreak;
+      }
+    }
+
+    return {
+      current: currentStreak,
+      longest: Math.max(longestStreak, currentStreak)
+    };
   }
 };
+
 

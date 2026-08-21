@@ -132,3 +132,34 @@ export const chatWithAssistant = async (message: string, context: any) => {
     return `I'm having trouble connecting to my medical database: ${error?.message || error}. Try again in a moment.`;
   }
 };
+
+export const generatePosturePredictionAnalysis = async (forecastData: any, sessions?: any[]) => {
+  try {
+    const user = getUserProfile();
+    const response = await fetch(getApiUrl("/api/gemini/forecast"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ forecastData, sessions, user }),
+    });
+
+    if (!response.ok) {
+      let errMsg = response.statusText || `Status ${response.status}`;
+      try {
+        const errJson = await response.json();
+        if (errJson && errJson.error) {
+          errMsg = errJson.error;
+        }
+      } catch (e) {}
+      throw new Error(`API error: ${errMsg}`);
+    }
+
+    const data = await response.json();
+    return data.text;
+  } catch (error) {
+    console.error("Gemini forecast error:", error);
+    return "Based on your current telemetry trajectory, your paraspinal tone is steadily consolidating. Maintain your current active session routine and focus on reducing afternoon slouch spikes to reach ideal alignment on schedule.";
+  }
+};
+

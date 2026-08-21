@@ -8,7 +8,7 @@ import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { Provider, useSelector, useDispatch } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 import { Toaster } from 'react-hot-toast';
-import { store, persistor, RootState, setAuthLoading, login, logout, checkDailyReset } from './store/store';
+import { store, persistor, RootState, setAuthLoading, login, logout, checkDailyReset, setDeviceStatus } from './store/store';
 import { auth, db } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, collection, query, where, getDocs, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -65,6 +65,7 @@ function AppContent() {
 
   useEffect(() => {
     dispatch(checkDailyReset());
+    dispatch(setDeviceStatus(false));
   }, [dispatch]);
 
   useEffect(() => {

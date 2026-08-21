@@ -463,6 +463,25 @@ const postureSlice = createSlice({
       state.autoRecordEnabled = action.payload;
     },
   },
+  extraReducers: (builder) => {
+    // If physical device connection drops while actively recording and not in simulation mode, pause recording
+    builder.addMatcher(
+      (action) => action.type === 'device/setDeviceStatus',
+      (state, action: PayloadAction<boolean>) => {
+        if (!action.payload && !state.isSimulating && state.isRecordingSession) {
+          state.isRecordingSession = false;
+        }
+      }
+    );
+    builder.addMatcher(
+      (action) => action.type === 'device/unpairDevice',
+      (state) => {
+        if (!state.isSimulating && state.isRecordingSession) {
+          state.isRecordingSession = false;
+        }
+      }
+    );
+  },
 });
 
 // Device Slice
@@ -488,13 +507,13 @@ const deviceSlice = createSlice({
   reducers: {
     setDeviceStatus: (state, action: PayloadAction<boolean>) => {
       state.isConnected = action.payload;
+      if (action.payload) {
+        state.lastConnected = new Date().toISOString();
+      }
     },
     setHasPaired: (state, action: PayloadAction<boolean>) => {
       state.hasPaired = action.payload;
-      if (action.payload) {
-        state.isConnected = true;
-        state.lastConnected = new Date().toISOString();
-      } else {
+      if (!action.payload) {
         state.isConnected = false;
         state.lastConnected = null;
         state.skippedSetup = false;

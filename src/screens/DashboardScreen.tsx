@@ -1,26 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, setIsRecordingSession, setDeviceStatus } from '../store/store';
+import { RootState, setIsRecordingSession } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { 
-  Activity, 
   Shield, 
   Flame, 
   Zap, 
   Sparkles, 
-  Play, 
-  Pause,
   Award,
   ChevronRight,
+  ChevronLeft,
   WifiOff,
-  Bell,
+  Bluetooth,
   Smartphone,
   CheckCircle2,
   X,
-  Target,
   ArrowUpRight,
-  Clock
+  RefreshCw,
+  Activity,
+  Calendar as CalendarIcon,
+  Play,
+  Pause
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -29,17 +30,28 @@ import { SessionService, UnifiedSession } from '../services/sessionService';
 import { auth } from '../lib/firebase';
 
 export const DashboardScreen: React.FC = () => {
-  const dispatch = useDispatch();
   const navigate = useNavigate();
+  const dispatch = useDispatch();
   const user = useSelector((state: RootState) => state.auth.user);
   const posture = useSelector((state: RootState) => state.posture);
   const device = useSelector((state: RootState) => state.device);
   const { thresholds, streak } = posture;
 
-  const [heroTab, setHeroTab] = useState<'feedback' | 'realtime' | 'index'>('realtime');
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
-  const [isAlertTriggered, setIsAlertTriggered] = useState(false);
   const [sessions, setSessions] = useState<UnifiedSession[]>([]);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | null>(new Date());
+  const [calendarMonthOffset, setCalendarMonthOffset] = useState<number>(0);
+
+  const handleRecordingToggle = () => {
+    if (posture.isRecordingSession) {
+      // If actively recording, clicking pauses the recording
+      dispatch(setIsRecordingSession(false));
+    } else {
+      // If paused or stopped, start/resume recording AND navigate directly to posture screen
+      dispatch(setIsRecordingSession(true));
+      navigate('/posture');
+    }
+  };
 
   // Subscribe to real-time session database updates across Firestore and LocalStorage
   useEffect(() => {
@@ -69,7 +81,11 @@ export const DashboardScreen: React.FC = () => {
   const combinedTodayTotalSecs = completedTodayTotalSecs + activeDuration;
   const totalTodayIncidents = completedTodayIncidents + activeIncidents;
 
-  // Integrity Score for Today
+  // Real-time consecutive streak dynamically calculated from actual database sessions
+  const realStreak = SessionService.calculateRealStreak(sessions);
+
+  // Integrity Score for Today - based purely on recorded data
+  const hasTodayData = combinedTodayTotalSecs > 0 || todayCompletedSessions.length > 0 || (posture.isRecordingSession && activeDuration > 0);
   let totalTodayWeightedScore = todayCompletedSessions.reduce((acc, s) => acc + ((s.score || 0) * (s.duration || 0)), 0);
   if (posture.isRecordingSession && activeDuration > 0) {
     totalTodayWeightedScore += (posture.score * activeDuration);
@@ -77,7 +93,62 @@ export const DashboardScreen: React.FC = () => {
 
   const combinedTodayIntegrity = combinedTodayTotalSecs > 0
     ? Math.round(totalTodayWeightedScore / combinedTodayTotalSecs)
-    : (todayCompletedSessions.length > 0 ? todayCompletedSessions[0].score : (posture.isRecordingSession ? posture.score : 30));
+    : (todayCompletedSessions.length > 0 ? todayCompletedSessions[0].score : (posture.isRecordingSession ? posture.score : 0));
+
+  // Calendar calculations for the current/selected month
+  const activeMonthDate = new Date();
+  activeMonthDate.setMonth(activeMonthDate.getMonth() + calendarMonthOffset);
+  const currentMonthName = activeMonthDate.toLocaleString('default', { month: 'long' });
+  const currentYear = activeMonthDate.getFullYear();
+
+  const firstDayOfMonth = new Date(activeMonthDate.getFullYear(), activeMonthDate.getMonth(), 1);
+  const daysInMonth = new Date(activeMonthDate.getFullYear(), activeMonthDate.getMonth() + 1, 0).getDate();
+  const startingDayIndex = (firstDayOfMonth.getDay() + 6) % 7; // Monday = 0
+
+  // Build calendar matrix days - ONLY show dots for days with REAL recorded sessions
+  const calendarDays = [];
+  for (let i = 0; i < startingDayIndex; i++) {
+    calendarDays.push({ day: null, date: null, score: null, status: 'empty' });
+  }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateObj = new Date(activeMonthDate.getFullYear(), activeMonthDate.getMonth(), d);
+    const dateStr = dateObj.toDateString();
+    const isToday = dateStr === new Date().toDateString();
+    const isFuture = dateObj > new Date();
+
+    const matchingSessions = sessions.filter(s => {
+      if (!s.date) return false;
+      return new Date(s.date).toDateString() === dateStr;
+    });
+
+    let score: number | null = null;
+    let status: 'optimal' | 'moderate' | 'poor' | 'empty' | 'rest' = 'empty';
+
+    if (isToday) {
+      if (hasTodayData && combinedTodayIntegrity > 0) {
+        score = combinedTodayIntegrity;
+        if (score >= thresholds.good) status = 'optimal';
+        else if (score >= thresholds.warn) status = 'moderate';
+        else status = 'poor';
+      }
+    } else if (matchingSessions.length > 0) {
+      const sum = matchingSessions.reduce((acc, s) => acc + (s.score || 0), 0);
+      score = Math.round(sum / matchingSessions.length);
+      if (score >= thresholds.good) status = 'optimal';
+      else if (score >= thresholds.warn) status = 'moderate';
+      else if (score > 0) status = 'poor';
+    }
+
+    calendarDays.push({
+      day: d,
+      date: dateObj,
+      score: isFuture ? null : score,
+      status: isFuture ? 'empty' : status,
+      isToday,
+      isFuture,
+    });
+  }
 
   // Recalculate full clinical & biomechanical telemetry
   const m: LocalBiomechanicalMetrics = LocalModelService.recalculateAllBiomechanicalMetrics(
@@ -90,301 +161,336 @@ export const DashboardScreen: React.FC = () => {
     user ? { age: user.age, height: user.height, weight: user.weight } : undefined
   );
 
+  // Dynamic status evaluation based on thresholds
   const isGoodPosture = posture.angle >= thresholds.good;
   const isWarning = posture.angle >= thresholds.warn && posture.angle < thresholds.good;
 
-  const statusInfo = isGoodPosture ? {
-    label: 'OPTIMAL ALIGNMENT',
-    dotColor: 'bg-emerald-500',
-    textColor: 'text-emerald-500',
-    borderColor: 'border-emerald-200',
-    badge: 'bg-emerald-100 text-emerald-800'
+  // Dynamic Theme Colors directly matching the posture angle
+  const statusTheme = isGoodPosture ? {
+    statusText: 'OPTIMAL ALIGNMENT',
+    dotBg: 'bg-[#10b981]',
+    colorHex: '#10b981',
+    primaryTextClass: 'text-[#10b981]',
+    subTextClass: 'text-[#34d399]',
+    cardGlowClass: 'from-emerald-100/40 via-emerald-50/15 to-transparent',
+    ecgColor: '#10b981',
+    badgeClass: 'bg-emerald-100 text-emerald-800'
   } : isWarning ? {
-    label: 'MILD SLOUCH',
-    dotColor: 'bg-amber-500',
-    textColor: 'text-amber-500',
-    borderColor: 'border-amber-200',
-    badge: 'bg-amber-100 text-amber-800'
+    statusText: 'MILD SLOUCH',
+    dotBg: 'bg-[#f59e0b]',
+    colorHex: '#f59e0b',
+    primaryTextClass: 'text-[#f59e0b]',
+    subTextClass: 'text-[#fbbf24]',
+    cardGlowClass: 'from-amber-100/40 via-amber-50/15 to-transparent',
+    ecgColor: '#f59e0b',
+    badgeClass: 'bg-amber-100 text-amber-800'
   } : {
-    label: 'POOR ALIGNMENT',
-    dotColor: 'bg-rose-500',
-    textColor: 'text-rose-500',
-    borderColor: 'border-rose-200',
-    badge: 'bg-rose-100 text-rose-800'
+    statusText: 'POOR ALIGNMENT',
+    dotBg: 'bg-[#ff2d55]',
+    colorHex: '#ff2d55',
+    primaryTextClass: 'text-[#ff2d55]',
+    subTextClass: 'text-[#fb7185]',
+    cardGlowClass: 'from-rose-100/50 via-rose-50/15 to-transparent',
+    ecgColor: '#ff2d55',
+    badgeClass: 'bg-rose-100 text-rose-800'
   };
 
-  // Test Alert Handler
-  const handleTestAlert = () => {
-    setIsAlertTriggered(true);
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-      gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.5);
-    } catch (e) {
-      console.log('Audio alert context not ready', e);
-    }
-    setTimeout(() => setIsAlertTriggered(false), 2000);
-  };
-
-  // Format Focus Max Time (longest continuous upright run)
+  // Format Focus Max Time
   const formatFocusMax = (seconds: number) => {
-    const s = seconds > 0 ? seconds : 355; // default 5m 55s
+    const s = Math.max(0, seconds || 0);
     const mins = Math.floor(s / 60);
     const rem = s % 60;
     return `${mins}m ${rem}s`;
   };
 
+  const todayMaxFocus = posture.isRecordingSession
+    ? Math.max(posture.maxFocusDuration || 0, activeGood)
+    : todayCompletedSessions.reduce((max, s) => Math.max(max, s.maxFocusStreak || s.goodSessionSeconds || 0), 0);
+
   const userName = user?.name ? user.name.toUpperCase() : 'PRITHVI';
 
   return (
-    <div className="space-y-6 max-w-md md:max-w-2xl lg:max-w-3xl mx-auto px-4 pt-3 pb-32 font-sans">
-      {/* TOP HEADER / CONTROL SECTION */}
-      <div className="flex items-start justify-between gap-2 pt-2">
-        <div>
-          <span className="text-[11px] font-black text-slate-400 tracking-widest uppercase block">
+    <div className="space-y-5 max-w-md md:max-w-xl mx-auto px-4 pt-1 pb-32 font-sans selection:bg-indigo-100">
+      
+      {/* 1. TOP SYNC BANNER */}
+      <div className="bg-[#1d6bf3] text-white px-4 py-2.5 rounded-xl flex items-center justify-between shadow-xs -mx-1">
+        <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider">
+          <RefreshCw size={14} className="animate-spin" />
+          <span>SYNCING CHANGES...</span>
+        </div>
+        <span className="text-[11px] font-bold text-white/90">
+          10 items pending
+        </span>
+      </div>
+
+      {/* 2. HEADER: CONTROL & HELLO PRITHVI + STATUS PILLS + EXACT DOCTOR AVATAR BOX */}
+      <div className="flex items-start justify-between gap-3 pt-2">
+        {/* Left: Control Label & Name */}
+        <div className="pt-0.5">
+          <span className="text-[11px] font-black text-slate-400 tracking-[0.2em] uppercase block">
             CONTROL
           </span>
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight leading-none mt-0.5">
-            Hello, <br className="sm:hidden" />
-            <span className="font-black text-slate-950">{userName}</span>
+          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-none mt-1">
+            Hello, <br />
+            <span className="font-black text-slate-950 text-3xl sm:text-4xl">{userName}</span>
           </h1>
         </div>
 
-        <div className="flex flex-col items-end gap-2">
-          {/* Status Badges Row */}
+        {/* Right: Status Pills & Doctor Avatar Box */}
+        <div className="flex items-center gap-2.5">
+          {/* Status Pills */}
           <div className="flex items-center gap-1.5">
             <span className={cn(
               "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-colors",
-              device.status === 'connected' 
-                ? "bg-emerald-50 text-emerald-600 border border-emerald-100" 
-                : "bg-rose-50 text-rose-500 border border-rose-100"
+              device.isConnected 
+                ? "bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]" 
+                : "bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3]"
             )}>
-              <WifiOff size={11} className={device.status === 'connected' ? 'hidden' : 'inline'} />
-              {device.status === 'connected' ? 'ONLINE' : 'OFFLINE'}
-            </span>
-
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-600 border border-indigo-100 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-pulse" />
-              ACTIVE
-            </span>
-          </div>
-
-          {/* Test Alert + Avatar Row */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleTestAlert}
-              className={cn(
-                "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1 border shadow-xs transition-all active:scale-95",
-                isAlertTriggered 
-                  ? "bg-rose-500 text-white border-rose-600 animate-bounce" 
-                  : "bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200"
-              )}
-            >
-              <Bell size={11} className={isAlertTriggered ? "text-white" : "text-slate-500"} />
-              <span>{isAlertTriggered ? "ALERTING..." : "TEST ALERT"}</span>
-            </button>
-
-            {/* Profile Avatar */}
-            <button 
-              onClick={() => navigate('/profile')}
-              className="w-11 h-11 rounded-full bg-slate-100 border-2 border-white shadow-soft overflow-hidden flex items-center justify-center shrink-0 active:scale-95 transition-transform"
-            >
-              {user?.photo ? (
-                <img src={user.photo} alt="Avatar" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+              {device.isConnected ? (
+                <Bluetooth size={11} className="inline stroke-[2.5] text-[#059669]" />
               ) : (
-                <div className="w-full h-full bg-gradient-to-br from-indigo-100 to-indigo-200 flex items-center justify-center">
-                  {/* Doctor/User Avatar Graphic */}
-                  <svg className="w-full h-full" viewBox="0 0 100 100" fill="none">
-                    <circle cx="50" cy="50" r="50" fill="#f8fafc" />
-                    {/* Face */}
-                    <circle cx="50" cy="42" r="22" fill="#fed7aa" />
-                    {/* Hair */}
-                    <path d="M 28 36 C 28 20, 72 20, 72 36 C 72 30, 28 30, 28 36 Z" fill="#e2e8f0" />
-                    {/* Glasses */}
-                    <circle cx="42" cy="40" r="6" stroke="#475569" strokeWidth="2.5" fill="none" />
-                    <circle cx="58" cy="40" r="6" stroke="#475569" strokeWidth="2.5" fill="none" />
-                    <line x1="48" y1="40" x2="52" y2="40" stroke="#475569" strokeWidth="2.5" />
-                    {/* Smile */}
-                    <path d="M 44 52 Q 50 56 56 52" stroke="#475569" strokeWidth="2" strokeLinecap="round" fill="none" />
-                    {/* Suit / Collar */}
-                    <path d="M 22 90 C 25 68, 75 68, 78 90 Z" fill="#0f172a" />
-                    <path d="M 40 68 L 50 82 L 60 68 Z" fill="#ffffff" />
-                    <path d="M 48 76 L 50 90 L 52 76 Z" fill="#6366f1" />
-                  </svg>
-                </div>
+                <WifiOff size={10} className="inline stroke-[2.5]" />
+              )}
+              {device.isConnected ? 'ONLINE' : 'OFFLINE'}
+            </span>
+
+            <button
+              onClick={handleRecordingToggle}
+              className={cn(
+                "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 border transition-all active:scale-95 cursor-pointer shadow-2xs select-none",
+                posture.isRecordingSession
+                  ? "bg-[#ffe4e6] text-[#e11d48] border-[#fecdd3] hover:bg-[#fed7aa]/30"
+                  : (posture.totalSessionSeconds || 0) > 0
+                  ? "bg-[#fef3c7] text-[#d97706] border-[#fde68a] hover:bg-[#fef08a]"
+                  : "bg-[#ede9fe] text-[#6366f1] border-[#ddd6fe] hover:bg-[#e0e7ff]"
+              )}
+              title={
+                posture.isRecordingSession
+                  ? "Recording session in progress. Click to pause."
+                  : (posture.totalSessionSeconds || 0) > 0
+                  ? "Session paused. Click to resume and open Posture."
+                  : "Click to start recording and open Posture."
+              }
+            >
+              {posture.isRecordingSession ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#e11d48] animate-pulse shrink-0" />
+                  <span>RECORDING</span>
+                </>
+              ) : (posture.totalSessionSeconds || 0) > 0 ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#d97706] shrink-0" />
+                  <span>PAUSED</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#6366f1] shrink-0" />
+                  <span>START RECORDING</span>
+                </>
               )}
             </button>
           </div>
+
+          {/* Large Avatar Box */}
+          <button 
+            onClick={() => navigate('/profile')}
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-white border-2 border-white shadow-md overflow-hidden flex items-center justify-center shrink-0 active:scale-95 transition-transform"
+            title="Profile & Settings"
+          >
+            {user?.photo ? (
+              <img src={user.photo} alt="Avatar" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full bg-[#f8fafc] flex items-center justify-center p-0.5">
+                <svg className="w-full h-full" viewBox="0 0 100 100" fill="none">
+                  {/* Clean Background disc */}
+                  <circle cx="50" cy="50" r="48" fill="#f1f5f9" />
+                  
+                  {/* Doctor/User Face */}
+                  <circle cx="50" cy="42" r="21" fill="#fed7aa" />
+                  
+                  {/* Parted Gray Hair */}
+                  <path 
+                    d="M 28 36 C 28 18, 72 18, 72 36 C 72 28, 58 24, 50 24 C 42 24, 28 28, 28 36 Z" 
+                    fill="#e2e8f0" 
+                  />
+                  <path 
+                    d="M 28 36 C 32 30, 42 32, 48 30 C 52 28, 68 28, 72 36" 
+                    stroke="#cbd5e1" 
+                    strokeWidth="1.5" 
+                    fill="none" 
+                  />
+
+                  {/* Wireframe Glasses */}
+                  <circle cx="41" cy="40" r="6.5" stroke="#334155" strokeWidth="2.2" fill="none" />
+                  <circle cx="59" cy="40" r="6.5" stroke="#334155" strokeWidth="2.2" fill="none" />
+                  <line x1="47.5" y1="40" x2="52.5" y2="40" stroke="#334155" strokeWidth="2.2" />
+                  
+                  {/* Eyes inside glasses */}
+                  <circle cx="41" cy="40" r="1.8" fill="#1e293b" />
+                  <circle cx="59" cy="40" r="1.8" fill="#1e293b" />
+
+                  {/* Nose */}
+                  <path d="M 50 43 L 48.5 48 L 51.5 48" stroke="#f97316" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+
+                  {/* Gentle Smile */}
+                  <path d="M 44 54 Q 50 58 56 54" stroke="#475569" strokeWidth="2" strokeLinecap="round" fill="none" />
+                  
+                  {/* Doctor Suit / Dark Coat & White Shirt Collar */}
+                  <path d="M 18 94 C 22 68, 78 68, 82 94 Z" fill="#0f172a" />
+                  <path d="M 38 68 L 50 84 L 62 68 Z" fill="#ffffff" />
+                  <path d="M 48 76 L 50 94 L 52 76 Z" fill="#4f46e5" />
+                </svg>
+              </div>
+            )}
+          </button>
         </div>
       </div>
 
-      {/* 3 SEGMENTED TAB SELECTOR */}
-      <div className="bg-slate-100/90 p-1 rounded-2xl grid grid-cols-3 gap-1">
-        <button
-          onClick={() => setHeroTab('feedback')}
-          className={cn(
-            "py-2.5 px-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all text-center leading-tight",
-            heroTab === 'feedback'
-              ? "bg-white text-slate-900 shadow-soft"
-              : "text-slate-400 hover:text-slate-600"
-          )}
-        >
-          Spindle Alignment Feedback
-        </button>
-        <button
-          onClick={() => setHeroTab('realtime')}
-          className={cn(
-            "py-2.5 px-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all text-center leading-tight",
-            heroTab === 'realtime'
-              ? "bg-white text-slate-900 shadow-soft"
-              : "text-slate-400 hover:text-slate-600"
-          )}
-        >
-          Realtime Stance
-        </button>
-        <button
-          onClick={() => setHeroTab('index')}
-          className={cn(
-            "py-2.5 px-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all text-center leading-tight",
-            heroTab === 'index'
-              ? "bg-white text-slate-900 shadow-soft"
-              : "text-slate-400 hover:text-slate-600"
-          )}
-        >
-          Upper Back Index
-        </button>
-      </div>
-
-      {/* BIG HERO CARD */}
+      {/* 3. BIG HERO CARD (Dynamic Posture Colors + Refined Height & Smooth Edges) */}
       <div 
         data-tour="posture-ring" 
-        className="bg-white rounded-[36px] p-6 sm:p-7 shadow-xl border border-slate-100/80 relative overflow-hidden flex flex-col justify-between space-y-6"
+        className="bg-white rounded-[32px] p-5 pb-4 sm:p-6 sm:pb-4.5 shadow-[0_12px_32px_-8px_rgba(15,23,42,0.08),0_4px_12px_-2px_rgba(15,23,42,0.03)] border border-slate-100/90 relative overflow-hidden flex flex-col justify-between space-y-2 sm:space-y-2.5 transition-all"
       >
-        {/* Soft Ambient Background Glow */}
+        {/* Soft Dynamic Gradient Background Glow */}
         <div 
           className={cn(
-            "absolute -top-16 -right-16 w-56 h-56 rounded-full blur-3xl opacity-20 transition-colors duration-700 pointer-events-none",
-            isGoodPosture ? "bg-emerald-400" : isWarning ? "bg-amber-400" : "bg-rose-400"
+            "absolute inset-0 bg-gradient-to-t pointer-events-none transition-all duration-700",
+            statusTheme.cardGlowClass
           )} 
         />
 
-        {/* Card Header */}
+        {/* Card Header: Dynamic Status & ECG button */}
         <div className="flex items-start justify-between relative z-10">
           <div>
             <div className="flex items-center gap-2">
-              <span className={cn("w-2.5 h-2.5 rounded-full animate-pulse", statusInfo.dotColor)} />
-              <span className={cn("text-xs font-black uppercase tracking-wider", statusInfo.textColor)}>
-                {statusInfo.label}
+              <span className={cn("w-2 h-2 rounded-full animate-pulse", statusTheme.dotBg)} />
+              <span 
+                className="text-xs sm:text-sm font-black uppercase tracking-wider"
+                style={{ color: statusTheme.colorHex }}
+              >
+                {statusTheme.statusText}
               </span>
             </div>
-            <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase block mt-0.5">
+            <span 
+              className="text-[9px] sm:text-[10px] font-black tracking-widest uppercase block mt-0.5"
+              style={{ color: statusTheme.colorHex, opacity: 0.8 }}
+            >
               CLINICAL PRECISION
             </span>
           </div>
 
-          {/* Pulse Rate / Telemetry Button */}
+          {/* Floating ECG Pulse waveform button */}
           <button 
             onClick={() => navigate('/posture')}
-            className={cn(
-              "w-10 h-10 rounded-2xl bg-white border border-slate-100 shadow-soft flex items-center justify-center transition-all active:scale-95",
-              statusInfo.textColor
-            )}
+            className="w-10 h-10 rounded-xl bg-white border border-slate-100 shadow-2xs flex items-center justify-center transition-all hover:bg-slate-50 active:scale-95"
+            title="Posture Telemetry"
           >
-            <Activity size={18} className="animate-pulse" />
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path 
+                d="M 2 12 L 6 12 L 9 5 L 13 19 L 16 10 L 18 14 L 22 12" 
+                stroke={statusTheme.ecgColor} 
+                strokeWidth="2.3" 
+                strokeLinecap="round" 
+                strokeLinejoin="round" 
+              />
+            </svg>
           </button>
         </div>
 
-        {/* Center Stage & Figure */}
-        <div className="relative flex items-center justify-center py-2">
-          {/* Circular Stage */}
-          <div className="w-52 h-52 sm:w-56 sm:h-56 rounded-full bg-slate-50/70 border border-slate-100 flex items-center justify-center relative shadow-inner">
-            <PostureFigure size={160} angle={posture.angle} />
+        {/* Center Circular Stage + Head Figure + Floating Angle Pill */}
+        <div className="relative flex items-center justify-center py-0">
+          {/* Circular Stage with clean bevel & soft depth */}
+          <div className="w-52 h-52 sm:w-56 sm:h-56 rounded-full bg-gradient-to-b from-[#f8fafc] to-[#f1f5f9] border border-slate-200/80 flex items-center justify-center relative shadow-[inset_0_2px_6px_rgba(0,0,0,0.02),0_4px_16px_rgba(15,23,42,0.03)]">
+            <PostureFigure size={165} angle={posture.angle} />
 
-            {/* Floating Angle Pill on Bottom-Right */}
-            <div className="absolute -bottom-2 -right-2 bg-white/95 backdrop-blur-md px-3.5 py-2 rounded-2xl shadow-lg border border-slate-100 text-center min-w-[70px]">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">
+            {/* Floating Angle Pill on Bottom-Right - Pristine Overlapping Badge */}
+            <div className="absolute bottom-2 -right-2 sm:bottom-3 sm:-right-3 z-20 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl shadow-[0_8px_20px_-4px_rgba(15,23,42,0.12),0_2px_6px_-1px_rgba(15,23,42,0.04)] border border-slate-100/90 text-center min-w-[76px] select-none">
+              <span 
+                className="text-[9px] font-black tracking-widest uppercase block transition-colors"
+                style={{ color: statusTheme.colorHex }}
+              >
                 ANGLE
               </span>
-              <span className={cn("text-xl font-black tracking-tight leading-none", statusInfo.textColor)}>
+              <span 
+                className="text-2xl font-black tracking-tight leading-none transition-colors"
+                style={{ color: statusTheme.colorHex }}
+              >
                 {Math.round(posture.angle)}°
               </span>
             </div>
           </div>
         </div>
 
-        {/* Bottom Metrics & Actions */}
-        <div className="flex items-end justify-between pt-2 relative z-10 border-t border-slate-50">
+        {/* Bottom Integrity Score + Diagnostic Tab Button (Tightened & Seamless) */}
+        <div className="flex items-end justify-between pt-0 pb-0.5 relative z-10">
           <div>
-            <div className={cn("text-4xl font-black tracking-tight", statusInfo.textColor)}>
+            <div 
+              className="text-3xl sm:text-4xl font-black tracking-tight leading-none"
+              style={{ color: statusTheme.colorHex }}
+            >
               {combinedTodayIntegrity}%
             </div>
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mt-0.5">
+            <span 
+              className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest block mt-0.5"
+              style={{ color: statusTheme.colorHex, opacity: 0.8 }}
+            >
               INTEGRITY SCORE
             </span>
           </div>
 
           <button
             onClick={() => setIsAiModalOpen(true)}
-            className="px-4 py-2.5 rounded-full bg-white border border-slate-200 shadow-soft text-slate-800 hover:text-slate-950 hover:border-slate-300 font-black text-[11px] uppercase tracking-wider flex items-center gap-1.5 transition-all active:scale-95"
+            className="px-4 py-2 rounded-full bg-white border border-slate-200 shadow-2xs hover:shadow-soft text-slate-900 hover:text-black font-black text-[11px] sm:text-xs uppercase tracking-wider flex items-center gap-1.5 transition-all active:scale-95"
           >
             <span>DIAGNOSTIC TAB</span>
-            <ChevronRight size={13} />
+            <ChevronRight size={13} className="stroke-[3]" />
           </button>
         </div>
       </div>
 
-      {/* BIOMECHANICAL TELEMETRY HEADER & CARD */}
-      <div className="space-y-3">
+      {/* 5. BIOMECHANICAL TELEMETRY */}
+      <div className="space-y-3 pt-1">
         <div className="flex items-center justify-between px-1">
           <span className="text-[11px] font-black uppercase tracking-widest text-slate-400">
             BIOMECHANICAL TELEMETRY
           </span>
           <button
             onClick={() => setIsAiModalOpen(true)}
-            className="text-xs font-black uppercase tracking-wider text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+            className="text-xs font-black uppercase tracking-wider text-[#6366f1] hover:text-indigo-700 flex items-center gap-1.5"
           >
-            <Sparkles size={13} />
+            <Sparkles size={14} />
             <span>VIEW AI DIAGNOSTICS</span>
           </button>
         </div>
 
-        {/* Spinal Stress Load Quick Strip */}
-        <div className="bg-white rounded-[24px] p-4 border border-slate-100 shadow-soft flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-black">
-              <Activity size={18} />
-            </div>
-            <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                SPINAL STRESS LOAD
-              </span>
-              <span className="text-sm font-black text-slate-800">
-                {m.upperBackStrainLbs} lbs tensile load
-              </span>
-            </div>
+        {/* Spinal Stress Load Card */}
+        <div className="bg-white rounded-[28px] p-5 border border-slate-100 shadow-soft flex items-center justify-between">
+          <div>
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">
+              SPINAL STRESS LOAD
+            </span>
+            <span className="text-xs font-medium text-slate-500 mt-0.5 block">
+              Average Load: {m.upperBackStrainLbs} lbs
+            </span>
           </div>
 
           <span className={cn(
-            "text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider",
-            m.fatigueScore < 35 ? "bg-emerald-100 text-emerald-800" : m.fatigueScore < 70 ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"
+            "text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider",
+            m.fatigueScore < 35 
+              ? "bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]" 
+              : m.fatigueScore < 70 
+              ? "bg-[#fef3c7] text-[#b45309] border border-[#fde68a]" 
+              : "bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3]"
           )}>
-            {m.loadClassification}
+            {m.fatigueScore < 35 ? "LOW" : m.fatigueScore < 70 ? "MODERATE" : "HIGH"}
           </span>
         </div>
       </div>
 
-      {/* SPINAL RESILIENCE STREAK CARD (Vivid Purple Banner) */}
+      {/* 6. SPINAL RESILIENCE STREAK BANNER */}
       <div 
         data-tour="streak-card" 
-        className="bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-700 rounded-[32px] p-6 text-white shadow-lg relative overflow-hidden flex items-center justify-between"
+        className="bg-gradient-to-r from-[#6366f1] via-[#7c3aed] to-[#6d28d9] rounded-[32px] p-6 text-white shadow-lg relative overflow-hidden flex items-center justify-between"
       >
         <div className="space-y-1 relative z-10">
           <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-white/80">
@@ -392,10 +498,14 @@ export const DashboardScreen: React.FC = () => {
             <span>SPINAL RESILIENCE</span>
           </div>
           <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white flex items-center gap-2">
-            🔥 {streak.current > 0 ? streak.current : 5} Day Streak
+            🔥 {realStreak.current} Day Streak
           </h2>
           <p className="text-xs font-medium text-white/90">
-            Your consistency is in the top 5%.
+            {realStreak.current === 0 
+              ? 'Start recording posture sessions to build your daily streak!'
+              : realStreak.current === 1
+              ? '1 day streak active! Record today to keep building momentum.'
+              : `${realStreak.current} consecutive active days! Great consistency.`}
           </p>
         </div>
 
@@ -403,78 +513,78 @@ export const DashboardScreen: React.FC = () => {
           <Award size={28} />
         </div>
 
-        {/* Ambient background rings */}
+        {/* Ambient background glow */}
         <div className="absolute -right-8 -bottom-8 w-40 h-40 rounded-full bg-white/10 blur-xl pointer-events-none" />
       </div>
 
-      {/* 4 METRIC GRID CARDS (2x2) */}
+      {/* 7. 2x2 METRIC GRID CARDS */}
       <div className="grid grid-cols-2 gap-3.5">
         {/* Card 1: Integrity (Green) */}
-        <div className="bg-emerald-50/50 border border-emerald-100 rounded-[28px] p-5 flex flex-col justify-between h-36 transition-all hover:bg-emerald-50/80 shadow-xs">
-          <div className="w-8 h-8 rounded-full bg-white shadow-xs border border-emerald-100 flex items-center justify-center text-emerald-500">
-            <Shield size={16} className="fill-emerald-500/20" />
+        <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-[28px] p-5 flex flex-col justify-between h-36 shadow-2xs">
+          <div className="w-9 h-9 rounded-full bg-white shadow-2xs border border-[#dcfce7] flex items-center justify-center text-[#16a34a]">
+            <Shield size={18} className="fill-[#16a34a]/20" />
           </div>
           <div>
-            <div className="text-2xl sm:text-3xl font-black text-emerald-600 tracking-tight">
-              {combinedTodayIntegrity}%
+            <div className="text-2xl sm:text-3xl font-black text-[#16a34a] tracking-tight">
+              {hasTodayData ? `${combinedTodayIntegrity}%` : '0%'}
             </div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 block mt-0.5">
+            <span className="text-[10px] font-black uppercase tracking-widest text-[#16a34a] block mt-0.5">
               INTEGRITY
             </span>
           </div>
         </div>
 
         {/* Card 2: Incidents (Rose/Red) */}
-        <div className="bg-rose-50/50 border border-rose-100 rounded-[28px] p-5 flex flex-col justify-between h-36 transition-all hover:bg-rose-50/80 shadow-xs">
-          <div className="w-8 h-8 rounded-full bg-white shadow-xs border border-rose-100 flex items-center justify-center">
-            <div className="w-3.5 h-3.5 rounded-full bg-rose-500" />
+        <div className="bg-[#fff1f2] border border-[#ffe4e6] rounded-[28px] p-5 flex flex-col justify-between h-36 shadow-2xs">
+          <div className="w-9 h-9 rounded-full bg-white shadow-2xs border border-[#ffe4e6] flex items-center justify-center">
+            <div className="w-4 h-4 rounded-full bg-[#e11d48]" />
           </div>
           <div>
-            <div className="text-2xl sm:text-3xl font-black text-rose-600 tracking-tight">
-              {totalTodayIncidents > 0 ? totalTodayIncidents : 82}
+            <div className="text-2xl sm:text-3xl font-black text-[#e11d48] tracking-tight">
+              {totalTodayIncidents}
             </div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-rose-600 block mt-0.5">
+            <span className="text-[10px] font-black uppercase tracking-widest text-[#e11d48] block mt-0.5">
               INCIDENTS
             </span>
           </div>
         </div>
 
-        {/* Card 3: Focus Max (Purple/Indigo) */}
-        <div className="bg-purple-50/50 border border-purple-100 rounded-[28px] p-5 flex flex-col justify-between h-36 transition-all hover:bg-purple-50/80 shadow-xs">
-          <div className="w-8 h-8 rounded-full bg-white shadow-xs border border-purple-100 flex items-center justify-center text-purple-600">
-            <Zap size={16} className="fill-purple-600" />
+        {/* Card 3: Focus Max (Purple) */}
+        <div className="bg-[#faf5ff] border border-[#f3e8ff] rounded-[28px] p-5 flex flex-col justify-between h-36 shadow-2xs">
+          <div className="w-9 h-9 rounded-full bg-white shadow-2xs border border-[#f3e8ff] flex items-center justify-center text-[#7e22ce]">
+            <Zap size={18} className="fill-[#7e22ce]" />
           </div>
           <div>
-            <div className="text-2xl sm:text-3xl font-black text-purple-700 tracking-tight">
-              {formatFocusMax(combinedTodayGoodSecs)}
+            <div className="text-2xl sm:text-3xl font-black text-[#7e22ce] tracking-tight">
+              {formatFocusMax(todayMaxFocus)}
             </div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-purple-600 block mt-0.5">
+            <span className="text-[10px] font-black uppercase tracking-widest text-[#7e22ce] block mt-0.5">
               FOCUS MAX
             </span>
           </div>
         </div>
 
-        {/* Card 4: Logic Power (Sky/Blue) */}
-        <div className="bg-sky-50/50 border border-sky-100 rounded-[28px] p-5 flex flex-col justify-between h-36 transition-all hover:bg-sky-50/80 shadow-xs">
-          <div className="w-8 h-8 rounded-full bg-white shadow-xs border border-sky-100 flex items-center justify-center text-sky-500">
-            <Smartphone size={16} />
+        {/* Card 4: Logic Power (Sky Blue) */}
+        <div className="bg-[#f0f9ff] border border-[#e0f2fe] rounded-[28px] p-5 flex flex-col justify-between h-36 shadow-2xs">
+          <div className="w-9 h-9 rounded-full bg-white shadow-2xs border border-[#e0f2fe] flex items-center justify-center text-[#0284c7]">
+            <Smartphone size={18} />
           </div>
           <div>
-            <div className="text-2xl sm:text-3xl font-black text-sky-600 tracking-tight">
+            <div className="text-2xl sm:text-3xl font-black text-[#0284c7] tracking-tight">
               {device.battery > 0 ? `${device.battery}%` : '0%'}
             </div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-sky-600 block mt-0.5">
+            <span className="text-[10px] font-black uppercase tracking-widest text-[#0284c7] block mt-0.5">
               LOGIC POWER
             </span>
           </div>
         </div>
       </div>
 
-      {/* TODAY'S ACHIEVEMENTS SECTION */}
+      {/* 8. TODAY'S ACHIEVEMENTS */}
       <div className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-soft space-y-4">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center">
-            <Award size={18} />
+          <div className="w-10 h-10 rounded-2xl bg-[#ede9fe] text-[#6366f1] flex items-center justify-center">
+            <Award size={20} />
           </div>
           <div>
             <h3 className="text-sm font-black text-slate-900 tracking-tight">
@@ -486,32 +596,188 @@ export const DashboardScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* Achievement items */}
         <div className="space-y-2.5">
-          <div className="p-3.5 bg-slate-50/80 rounded-2xl border border-slate-100 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <CheckCircle2 size={16} className="text-emerald-500" />
+          <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 size={18} className="text-[#10b981]" />
               <span className="text-xs font-bold text-slate-700">
-                {Math.round(combinedTodayGoodSecs / 60)} minutes upright today
+                {Math.round(combinedTodayGoodSecs / 60)} minutes today.
               </span>
             </div>
-            <span className="text-[10px] font-black text-indigo-600 uppercase bg-indigo-50 px-2 py-0.5 rounded-md">
+            <span className="text-[10px] font-black text-[#6366f1] uppercase bg-[#ede9fe] px-2.5 py-1 rounded-md">
               Target 45m
             </span>
           </div>
+        </div>
+      </div>
 
-          <div className="p-3.5 bg-slate-50/80 rounded-2xl border border-slate-100 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <CheckCircle2 size={16} className="text-emerald-500" />
-              <span className="text-xs font-bold text-slate-700">
-                Spinal Alignment Target Met
+      {/* 9. MONTHLY POSTURE COMPLIANCE CALENDAR */}
+      <div className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-soft space-y-5">
+        {/* Calendar Header with Month Navigation */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-inner">
+              <CalendarIcon size={20} />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-slate-900 tracking-tight">
+                {currentMonthName} {currentYear}
+              </h3>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">
+                MONTHLY POSTURE COMPLIANCE
               </span>
             </div>
-            <span className="text-[10px] font-black text-emerald-600 uppercase bg-emerald-50 px-2 py-0.5 rounded-md">
-              +50 XP
-            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setCalendarMonthOffset(prev => prev - 1)}
+              className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-100 flex items-center justify-center text-slate-600 border border-slate-200/70 transition-colors active:scale-95"
+              title="Previous Month"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <button
+              onClick={() => setCalendarMonthOffset(0)}
+              className={cn(
+                "px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors",
+                calendarMonthOffset === 0 
+                  ? "bg-indigo-50 text-indigo-600 border border-indigo-100" 
+                  : "bg-slate-50 text-slate-500 hover:bg-slate-100 border border-slate-200"
+              )}
+            >
+              Today
+            </button>
+            <button
+              onClick={() => setCalendarMonthOffset(prev => prev + 1)}
+              className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-100 flex items-center justify-center text-slate-600 border border-slate-200/70 transition-colors active:scale-95"
+              title="Next Month"
+            >
+              <ChevronRight size={16} />
+            </button>
           </div>
         </div>
+
+        {/* Weekday Headers */}
+        <div className="grid grid-cols-7 gap-1 text-center">
+          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, idx) => (
+            <span key={idx} className="text-[11px] font-black text-slate-400 uppercase py-1">
+              {day}
+            </span>
+          ))}
+        </div>
+
+        {/* Calendar Day Grid */}
+        <div className="grid grid-cols-7 gap-1.5">
+          {calendarDays.map((item, index) => {
+            if (!item.day) {
+              return <div key={`empty-${index}`} className="h-10 sm:h-11 rounded-xl bg-slate-50/40" />;
+            }
+
+            const isSelected = selectedCalendarDate && item.date && selectedCalendarDate.toDateString() === item.date.toDateString();
+
+            return (
+              <button
+                key={`day-${item.day}`}
+                onClick={() => item.date && setSelectedCalendarDate(item.date)}
+                className={cn(
+                  "h-10 sm:h-11 rounded-2xl flex flex-col items-center justify-center relative transition-all active:scale-95 border",
+                  item.isToday 
+                    ? "border-indigo-600 bg-indigo-50/40 font-black shadow-xs" 
+                    : isSelected 
+                    ? "border-slate-400 bg-slate-100 shadow-xs" 
+                    : "border-transparent bg-slate-50/70 hover:bg-slate-100/80",
+                  item.isFuture && "opacity-40 pointer-events-none"
+                )}
+              >
+                <span className={cn(
+                  "text-xs font-bold leading-none",
+                  item.isToday ? "text-indigo-600 font-black" : "text-slate-700"
+                )}>
+                  {item.day}
+                </span>
+
+                {/* Score Status Dot Indicator */}
+                {!item.isFuture && item.status !== 'empty' && (
+                  <div className="mt-1 flex items-center justify-center">
+                    <span 
+                      className={cn(
+                        "w-1.5 h-1.5 rounded-full",
+                        item.status === 'optimal' 
+                          ? "bg-[#10b981]" 
+                          : item.status === 'moderate' 
+                          ? "bg-[#f59e0b]" 
+                          : item.status === 'poor' 
+                          ? "bg-[#ff2d55]" 
+                          : "bg-slate-300"
+                      )} 
+                    />
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Selected Date Summary Footer */}
+        {selectedCalendarDate && (() => {
+          const selectedDateStr = selectedCalendarDate.toDateString();
+          const isSelectedToday = selectedDateStr === new Date().toDateString();
+          const daySessions = isSelectedToday
+            ? todayCompletedSessions
+            : sessions.filter(s => s.date && new Date(s.date).toDateString() === selectedDateStr);
+          const hasDayData = isSelectedToday ? hasTodayData : daySessions.length > 0;
+          const dayScore = isSelectedToday
+            ? (hasTodayData ? combinedTodayIntegrity : null)
+            : (daySessions.length > 0 ? Math.round(daySessions.reduce((a, b) => a + (b.score || 0), 0) / daySessions.length) : null);
+          const dayDuration = isSelectedToday
+            ? combinedTodayTotalSecs
+            : daySessions.reduce((a, b) => a + (b.duration || 0), 0);
+
+          return (
+            <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-800">
+                  {selectedCalendarDate.toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+                {isSelectedToday && (
+                  <span className="bg-indigo-100 text-indigo-700 text-[9px] font-black px-1.5 py-0.5 rounded-md uppercase">
+                    Today
+                  </span>
+                )}
+                {hasDayData && dayScore !== null ? (
+                  <span className={cn(
+                    "text-[10px] font-black px-2 py-0.5 rounded-md",
+                    dayScore >= thresholds.good ? "bg-emerald-100 text-emerald-800" :
+                    dayScore >= thresholds.warn ? "bg-amber-100 text-amber-800" :
+                    "bg-rose-100 text-rose-800"
+                  )}>
+                    {dayScore}% Score • {Math.round(dayDuration / 60)}m logged
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-medium text-slate-400">
+                    No sessions recorded
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#10b981]" />
+                  <span className="text-[10px] font-bold text-slate-500">Optimal</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#f59e0b]" />
+                  <span className="text-[10px] font-bold text-slate-500">Mild</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#ff2d55]" />
+                  <span className="text-[10px] font-bold text-slate-500">Poor</span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* AI BIOMECHANICAL REPORT MODAL */}

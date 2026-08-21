@@ -54,7 +54,11 @@ export const SyncManager: React.FC = () => {
         
         // Auto-configure paired state
         dispatch(setHasPaired(true));
-        dispatch(setDeviceStatus(true));
+
+        // Only mark online if data was updated within the last 15 seconds
+        if (data.updatedAt && (Date.now() - new Date(data.updatedAt).getTime() < 15000)) {
+          dispatch(setDeviceStatus(true));
+        }
 
         if (typeof data.batteryLevel === 'number' || typeof data.battery === 'number') {
           dispatch(updateBattery(data.batteryLevel ?? data.battery));

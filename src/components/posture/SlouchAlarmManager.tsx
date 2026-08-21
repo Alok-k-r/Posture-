@@ -13,6 +13,7 @@ export const SlouchAlarmManager: React.FC = () => {
     score, 
     thresholds, 
     isRecordingSession,
+    isSimulating,
     baselineAngle,
     history,
     goodSessionSeconds,
@@ -20,6 +21,7 @@ export const SlouchAlarmManager: React.FC = () => {
     incidents
   } = useSelector((state: RootState) => state.posture);
   
+  const isConnected = useSelector((state: RootState) => state.device.isConnected);
   const user = useSelector((state: RootState) => state.auth.user);
   
   // Local active states

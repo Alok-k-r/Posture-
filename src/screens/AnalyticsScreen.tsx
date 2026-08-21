@@ -90,7 +90,7 @@ export const AnalyticsScreen: React.FC = () => {
     return '#EF4444';
   };
 
-  // 7. Consistency Calendar Grid Calculations (GitHub style for last 28 days)
+  // 7. Consistency Calendar Grid Calculations (GitHub style for last 28 days) - directly from unified sessions
   const consistencyDays = Array.from({ length: 28 }, (_, i) => {
     const date = new Date();
     date.setDate(date.getDate() - (27 - i));
@@ -99,63 +99,35 @@ export const AnalyticsScreen: React.FC = () => {
     let score = 0;
     let type: 'excellent' | 'good' | 'average' | 'poor' | 'missed' = 'missed';
     
-    const isDemo = localStorage.getItem('login_mode') === 'demo';
+    // Check actual sessions from unified database sessions
+    const matchedSessions = sessions.filter(s => {
+      if (!s.date) return false;
+      return new Date(s.date).toDateString() === dateKey;
+    });
     
-    if (isDemo) {
-      score = 80;
-      type = 'good';
-      if (i === 27) {
-        score = hasData ? currentScore : 0;
-      } else if (i === 26) {
-        score = hasData ? historyAvg - 4 : 0;
-      } else if (i % 7 === 0) {
-        type = 'missed';
-        score = 0;
-      } else if (i % 9 === 0) {
-        type = 'poor';
-        score = 48;
-      } else if (i % 5 === 0) {
-        type = 'average';
-        score = 68;
-      } else if (i % 3 === 0) {
-        type = 'excellent';
-        score = 92;
+    if (i === 27) {
+      if (hasData) {
+        score = currentScore;
+      } else if (matchedSessions.length > 0) {
+        const sum = matchedSessions.reduce((acc, s) => acc + (s.score || 0), 0);
+        score = Math.round(sum / matchedSessions.length);
       } else {
-        type = 'good';
-        score = 82;
+        score = 0;
       }
     } else {
-      // REAL USER - Check actual sessions from unified database sessions
-      const matchedSessions = sessions.filter(s => {
-        if (!s.date) return false;
-        return new Date(s.date).toDateString() === dateKey;
-      });
-      
-      if (i === 27) {
-        if (hasData) {
-          score = currentScore;
-        } else if (matchedSessions.length > 0) {
-          score = matchedSessions[0].score;
-        } else {
-          score = 0;
-        }
+      if (matchedSessions.length > 0) {
+        const sum = matchedSessions.reduce((acc, s) => acc + (s.score || 0), 0);
+        score = Math.round(sum / matchedSessions.length);
       } else {
-        if (matchedSessions.length > 0) {
-          const sum = matchedSessions.reduce((acc, s) => acc + (s.score || 0), 0);
-          score = Math.round(sum / matchedSessions.length);
-        } else {
-          score = 0;
-        }
+        score = 0;
       }
     }
 
-    if (type !== 'missed' || !isDemo) {
-      if (score >= thresholds.good) type = 'excellent';
-      else if (score >= thresholds.warn) type = 'good';
-      else if (score > 45) type = 'average';
-      else if (score > 0) type = 'poor';
-      else type = 'missed';
-    }
+    if (score >= thresholds.good) type = 'excellent';
+    else if (score >= thresholds.warn) type = 'good';
+    else if (score > 45) type = 'average';
+    else if (score > 0) type = 'poor';
+    else type = 'missed';
     
     return {
       dayNum: date.getDate(),
@@ -209,39 +181,8 @@ export const AnalyticsScreen: React.FC = () => {
 
   // 8. Health Trend Timeline dynamic dataset (daily / weekly / monthly)
   const getTrendData = () => {
-    const isDemo = localStorage.getItem('login_mode') === 'demo';
-    
-    if (isDemo) {
-      if (viewType === 'daily') {
-        return [
-          { name: '09:00', health: 85, load: 12, fatigue: 15, recovery: 90, stability: 88 },
-          { name: '11:00', health: 88, load: 15, fatigue: 20, recovery: 85, stability: 92 },
-          { name: '13:00', health: 78, load: 24, fatigue: 35, recovery: 80, stability: 82 },
-          { name: '15:00', health: 65, load: 38, fatigue: 52, recovery: 70, stability: 74 },
-          { name: '17:00', health: 82, load: 18, fatigue: 28, recovery: 88, stability: 86 },
-          { name: '19:00', health: hasData ? historyAvg : 80, load: Math.round(localMetrics.upperBackStrainLbs), fatigue: Math.round(localMetrics.fatigueScore), recovery: Math.round(localMetrics.recoveryEfficiency), stability: Math.round(localMetrics.stabilityScore) },
-        ];
-      } else if (viewType === 'weekly') {
-        return [
-          { name: 'Mon', health: 85, load: 14, fatigue: 22, recovery: 88, stability: 86 },
-          { name: 'Tue', health: 72, load: 28, fatigue: 45, recovery: 75, stability: 78 },
-          { name: 'Wed', health: 88, load: 12, fatigue: 18, recovery: 92, stability: 90 },
-          { name: 'Thu', health: 65, load: 35, fatigue: 55, recovery: 68, stability: 72 },
-          { name: 'Fri', health: hasData ? historyAvg : 84, load: Math.round(localMetrics.averageThoracicLoadLbs), fatigue: Math.round(localMetrics.fatigueScore), recovery: Math.round(localMetrics.recoveryEfficiency), stability: Math.round(localMetrics.stabilityScore) },
-          { name: 'Sat', health: 78, load: 16, fatigue: 24, recovery: 85, stability: 84 },
-          { name: 'Sun', health: 82, load: 15, fatigue: 20, recovery: 89, stability: 88 },
-        ];
-      } else {
-        return [
-          { name: 'Jan', health: 70, load: 26, fatigue: 40, recovery: 72, stability: 75 },
-          { name: 'Feb', health: 74, load: 22, fatigue: 32, recovery: 78, stability: 80 },
-          { name: 'Mar', health: 81, load: 18, fatigue: 25, recovery: 84, stability: 85 },
-          { name: 'Apr', health: hasData ? historyAvg : 82, load: Math.round(localMetrics.averageThoracicLoadLbs), fatigue: Math.round(localMetrics.fatigueScore), recovery: Math.round(localMetrics.recoveryEfficiency), stability: Math.round(localMetrics.stabilityScore) },
-        ];
-      }
-    } else {
-      // REAL USER - Strictly mapped to actual user history days/hours/weeks
-      const today = new Date();
+    // Strictly mapped to actual user history days/hours/weeks from unified database sessions
+    const today = new Date();
       
       if (viewType === 'daily') {
         // Today's hourly timeline slots (08:00 to 20:00)
@@ -361,7 +302,6 @@ export const AnalyticsScreen: React.FC = () => {
           }
         });
       }
-    }
   };
 
   const trendData = getTrendData();
