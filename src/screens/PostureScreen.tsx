@@ -14,7 +14,6 @@ import {
 } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { Spine3DModel } from '../components/spine/Spine3DModel';
-import { SlouchAlarmManager } from '../components/posture/SlouchAlarmManager';
 import { 
   Activity, 
   Shield, 
@@ -458,8 +457,6 @@ export const PostureScreen: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-32 px-4 sm:px-6 pt-2">
-      {/* Background Slouch Audio/Haptic Monitor */}
-      <SlouchAlarmManager />
 
       {/* Top Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-100">

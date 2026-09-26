@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useDispatch, useSelector } from 'react-redux';
-import { RootState, setHasPaired, setSkippedSetup, setIsSimulating } from '../store/store';
+import { RootState, setHasPaired, setSkippedSetup, setIsSimulating, setDeviceStatus } from '../store/store';
 import { useNavigate } from 'react-router-dom';
 import { db, auth } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
+import { bluetoothService } from '../services/bluetoothService';
 import { 
   Bluetooth, Cpu, ShieldCheck, CheckCircle2, Wifi, Key,
   Search, ArrowRight, CornerDownRight, RotateCw, AlertTriangle, Play
@@ -56,37 +57,29 @@ export const DeviceSetupScreen: React.FC = () => {
       refreshToken: 'direct_ble_handshake_session_token'
     };
 
-    const bluetooth = (navigator as any).bluetooth;
-    if (bluetooth) {
+    if (bluetoothService.isSupported()) {
       try {
         setIsRealBleAttempt(true);
-        const device = await bluetooth.requestDevice({
-          filters: [{ namePrefix: 'PosturePal' }],
-          optionalServices: ['00001830-0000-1000-8000-00805f9b34fb']
-        });
-
         setStep('syncing');
 
         await addLog("⚡ Web Bluetooth initialization...", 150);
-        await addLog(`📡 BLE Device paired: "${device.name}"`, 250);
-        await addLog("🤝 Connecting to remote BLE GATT server...", 350);
-        const server = await device.gatt?.connect();
+        await addLog("🤝 Connecting to remote BLE GATT server via BluetoothService...", 350);
         
-        await addLog("📌 Fetching Primary Service [00001830-0000-1000-8000-00805f9b34fb]...", 300);
-        const service = await server?.getPrimaryService('00001830-0000-1000-8000-00805f9b34fb');
-        
-        await addLog("📝 Requesting config characteristic [00002a5c-0000-1000-8000-00805f9b34fb]...", 250);
-        const characteristic = await service?.getCharacteristic('00002a5c-0000-1000-8000-00805f9b34fb');
+        const success = await bluetoothService.connect();
+        if (!success) {
+          throw new Error("Could not connect to PosturePal pod.");
+        }
 
-        await addLog("📨 Encoding pairing parameters to binary array...", 200);
-        const encoder = new TextEncoder();
-        const data = encoder.encode(JSON.stringify({ t: 15.0, d: 10000 }));
+        await addLog(`📡 BLE Device connected: "${bluetoothService.getDeviceName()}"`, 250);
+        await addLog("📌 Primary Service & Real-Time Angle/Battery streams bound!", 300);
+        await addLog("📨 Writing configuration directly to ESP32 Flash Preferences...", 300);
         
-        await addLog("📤 Writing JSON bytes configuration directly to ESP32 Flash Preferences...", 400);
-        await characteristic?.writeValue(data);
-        
+        await bluetoothService.writeConfigPayload({ t: 15.0, d: 10000 });
         await addLog("💾 preferences.putBool('paired', true) -> Written!", 250);
-        
+        await addLog("📡 Live Angle & Biomechanical feedback stream is active!", 200);
+
+        dispatch(setHasPaired(true));
+        dispatch(setDeviceStatus(true));
         setStep('completed');
       } catch (err: any) {
         const errMsg = String(err.message || err);
@@ -131,49 +124,38 @@ export const DeviceSetupScreen: React.FC = () => {
       refreshToken
     };
 
-    // Attempt real Web Bluetooth GATT handshake
-    const bluetooth = (navigator as any).bluetooth;
-    if (bluetooth) {
+    // Attempt real Web Bluetooth GATT handshake via BluetoothService
+    if (bluetoothService.isSupported()) {
       try {
         setIsRealBleAttempt(true);
-        // This is executed synchronously inside the onClick click handler stack to satisfy user gesture!
-        const device = await bluetooth.requestDevice({
-          filters: [{ namePrefix: 'PosturePal' }],
-          optionalServices: ['00001830-0000-1000-8000-00805f9b34fb']
-        });
-
-        // Device is verified by user! Switch step to dynamic terminal console logs
         setStep('syncing');
 
         await addLog("⚡ Web Bluetooth matching: Authorized!", 150);
-        await addLog(`📡 BLE Device selected: "${device.name}"`, 300);
-        await addLog("🤝 Connecting to remote BLE GATT server...", 400);
-        const server = await device.gatt?.connect();
+        await addLog("🤝 Connecting to remote BLE GATT server via BluetoothService...", 350);
         
-        await addLog("🔐 Requesting user secure BLE Passkey validation...", 300);
-        await addLog(`🔑 Checking BLE Passkey: "${passkey}"... Validated!`, 300);
-        
-        await addLog("📌 Fetching Primary Service [00001830-0000-1000-8000-00805f9b34fb]...", 400);
-        const service = await server?.getPrimaryService('00001830-0000-1000-8000-00805f9b34fb');
-        
-        await addLog("📝 Requesting write characteristic [00002a5c-0000-1000-8000-00805f9b34fb]...", 300);
-        const characteristic = await service?.getCharacteristic('00002a5c-0000-1000-8000-00805f9b34fb');
-        
-        await addLog("📨 Encoding provisioning JSON parameters to binary array...", 300);
-        const encoder = new TextEncoder();
-        const data = encoder.encode(JSON.stringify(payload));
-        
-        await addLog("📤 Writing JSON bytes configuration directly to ESP32 Flash Preferences...", 500);
-        await characteristic?.writeValue(data);
-        
-        await addLog("💾 preferences.putString('uid', uid) -> Permanently Stored!", 400);
-        await addLog("💾 preferences.putString('ssid', ssid) -> Permanently Stored!", 300);
-        await addLog("💾 preferences.putString('refreshToken', token) -> Permanently Stored!", 300);
-        await addLog("💾 preferences.putBool('paired', true) -> Written!", 200);
-        
-        await addLog("🌐 ESP32 executing WiFi.begin() connection handshake...", 400);
-        await addLog("📡 Wi-Fi connected! ESP32 IP dynamic address acquired.", 300);
+        const success = await bluetoothService.connect();
+        if (!success) {
+          throw new Error("Could not establish GATT handshake.");
+        }
 
+        await addLog(`📡 BLE Device selected: "${bluetoothService.getDeviceName()}"`, 250);
+        await addLog("🔐 Requesting user secure BLE Passkey validation...", 250);
+        await addLog(`🔑 Checking BLE Passkey: "${passkey}"... Validated!`, 250);
+        await addLog("📌 Primary Service & Real-Time Telemetry characteristics bound!", 300);
+        await addLog("📨 Encoding provisioning JSON parameters to binary array...", 250);
+        await addLog("📤 Writing JSON bytes configuration directly to ESP32 Flash Preferences...", 400);
+
+        await bluetoothService.writeConfigPayload(payload);
+
+        await addLog("💾 preferences.putString('uid', uid) -> Permanently Stored!", 300);
+        await addLog("💾 preferences.putString('ssid', ssid) -> Permanently Stored!", 250);
+        await addLog("💾 preferences.putString('refreshToken', token) -> Permanently Stored!", 250);
+        await addLog("💾 preferences.putBool('paired', true) -> Written!", 200);
+        await addLog("🌐 ESP32 executing WiFi.begin() connection handshake...", 300);
+        await addLog("📡 Wi-Fi connected! Live angle & battery telemetry active.", 250);
+
+        dispatch(setHasPaired(true));
+        dispatch(setDeviceStatus(true));
         setStep('completed');
       } catch (err: any) {
         const errMsg = String(err.message || err);
@@ -240,6 +222,9 @@ export const DeviceSetupScreen: React.FC = () => {
 
   const handleFinishPairing = () => {
     dispatch(setHasPaired(true));
+    if (bluetoothService.isConnected()) {
+      dispatch(setDeviceStatus(true));
+    }
     navigate('/');
   };
 

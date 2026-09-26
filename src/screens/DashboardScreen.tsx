@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, setIsRecordingSession } from '../store/store';
+import { RootState, setIsRecordingSession, setDeviceStatus, setHasPaired } from '../store/store';
+import { bluetoothService } from '../services/bluetoothService';
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { 
   Shield, 
@@ -41,6 +42,26 @@ export const DashboardScreen: React.FC = () => {
   const [sessions, setSessions] = useState<UnifiedSession[]>([]);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | null>(new Date());
   const [calendarMonthOffset, setCalendarMonthOffset] = useState<number>(0);
+  const [isConnectingBle, setIsConnectingBle] = useState(false);
+
+  const handleDevicePillClick = async () => {
+    if (device.isConnected) {
+      navigate('/device');
+    } else {
+      setIsConnectingBle(true);
+      try {
+        const success = await bluetoothService.connect();
+        if (success) {
+          dispatch(setDeviceStatus(true));
+          dispatch(setHasPaired(true));
+        }
+      } catch (err: any) {
+        console.warn('Dashboard BLE connection prompt cancelled or failed:', err);
+      } finally {
+        setIsConnectingBle(false);
+      }
+    }
+  };
 
   const handleRecordingToggle = () => {
     if (posture.isRecordingSession) {
@@ -84,16 +105,21 @@ export const DashboardScreen: React.FC = () => {
   // Real-time consecutive streak dynamically calculated from actual database sessions
   const realStreak = SessionService.calculateRealStreak(sessions);
 
-  // Integrity Score for Today - based purely on recorded data
+  // Integrity Score for Today - based on recorded data or live alignment fallback
   const hasTodayData = combinedTodayTotalSecs > 0 || todayCompletedSessions.length > 0 || (posture.isRecordingSession && activeDuration > 0);
   let totalTodayWeightedScore = todayCompletedSessions.reduce((acc, s) => acc + ((s.score || 0) * (s.duration || 0)), 0);
   if (posture.isRecordingSession && activeDuration > 0) {
     totalTodayWeightedScore += (posture.score * activeDuration);
   }
 
+  // Real-time live score fallback: if device is streaming or user is monitoring, reflect current live alignment rating
+  const liveAlignmentScore = posture.score > 0 
+    ? posture.score 
+    : (posture.angle >= thresholds.good ? 100 : posture.angle >= thresholds.warn ? 75 : 50);
+
   const combinedTodayIntegrity = combinedTodayTotalSecs > 0
     ? Math.round(totalTodayWeightedScore / combinedTodayTotalSecs)
-    : (todayCompletedSessions.length > 0 ? todayCompletedSessions[0].score : (posture.isRecordingSession ? posture.score : 0));
+    : (todayCompletedSessions.length > 0 ? todayCompletedSessions[0].score : (posture.isRecordingSession ? posture.score : liveAlignmentScore));
 
   // Calendar calculations for the current/selected month
   const activeMonthDate = new Date();
@@ -240,19 +266,35 @@ export const DashboardScreen: React.FC = () => {
         <div className="flex items-center gap-2.5">
           {/* Status Pills */}
           <div className="flex items-center gap-1.5">
-            <span className={cn(
-              "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-colors",
-              device.isConnected 
-                ? "bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]" 
-                : "bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3]"
-            )}>
-              {device.isConnected ? (
+            <button
+              onClick={handleDevicePillClick}
+              disabled={isConnectingBle}
+              className={cn(
+                "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer select-none active:scale-95 shadow-2xs border",
+                device.isConnected 
+                  ? "bg-[#ecfdf5] text-[#059669] border-[#a7f3d0] hover:bg-[#d1fae5]" 
+                  : "bg-[#ffe4e6] text-[#e11d48] border-[#fecdd3] hover:bg-[#fed7aa]"
+              )}
+              title={
+                device.isConnected 
+                  ? `Hardware Connected (${device.batteryLevel}% Battery). Click for hardware settings.` 
+                  : "Hardware Offline. Click to connect PosturePal Pod via Bluetooth."
+              }
+            >
+              {isConnectingBle ? (
+                <RefreshCw size={11} className="inline stroke-[2.5] animate-spin text-[#e11d48]" />
+              ) : device.isConnected ? (
                 <Bluetooth size={11} className="inline stroke-[2.5] text-[#059669]" />
               ) : (
                 <WifiOff size={10} className="inline stroke-[2.5]" />
               )}
-              {device.isConnected ? 'ONLINE' : 'OFFLINE'}
-            </span>
+              <span>{isConnectingBle ? 'CONNECTING...' : device.isConnected ? 'ONLINE' : 'CONNECT POD'}</span>
+              {device.isConnected && (
+                <span className="text-[9px] font-bold opacity-80 border-l border-[#a7f3d0] pl-1 ml-0.5">
+                  {device.batteryLevel}%
+                </span>
+              )}
+            </button>
 
             <button
               onClick={handleRecordingToggle}
