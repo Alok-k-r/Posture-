@@ -10,6 +10,7 @@ import {
   Bluetooth, Cpu, ShieldCheck, CheckCircle2, Wifi, Key,
   Search, ArrowRight, CornerDownRight, RotateCw, AlertTriangle, Play
 } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 export const DeviceSetupScreen: React.FC = () => {
   const dispatch = useDispatch();
@@ -25,7 +26,13 @@ export const DeviceSetupScreen: React.FC = () => {
   const consoleEndRef = React.useRef<HTMLDivElement>(null);
 
   // Detect if running inside sandboxed frame (browser security isolates Bluetooth permission inside nested iframes)
-  const isEmbedded = typeof window !== 'undefined' && window.self !== window.top;
+  const isEmbedded = typeof window !== 'undefined' && (() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return true;
+    }
+  })();
 
   // Auto-scroll log console
   React.useEffect(() => {
@@ -104,7 +111,7 @@ export const DeviceSetupScreen: React.FC = () => {
 
   const handleStartSearchAndPair = async () => {
     if (!ssid) {
-      alert("Please enter a valid Wi-Fi SSID first.");
+      toast.error("Please enter a valid Wi-Fi SSID first.");
       return;
     }
     

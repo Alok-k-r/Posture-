@@ -65,55 +65,60 @@ export const TabBar: React.FC = () => {
   }, []);
 
   return (
-    <motion.div 
-      initial={false}
-      animate={{ 
-        y: isVisible ? 0 : 96, 
-        opacity: isVisible ? 1 : 0,
-        scale: isVisible ? 1 : 0.96
-      }}
-      transition={{ 
-        duration: 0.45, 
-        ease: [0.16, 1, 0.3, 1] // Smooth native iOS easing curve
-      }}
-      style={{ willChange: 'transform, opacity' }}
-      className={cn(
-        "fixed bottom-6 left-6 right-6 h-[76px] glass rounded-[32px] px-6 flex justify-between items-center z-50 shadow-premium border-white/20",
-        !isVisible && "pointer-events-none"
-      )}
+    <div 
+      id="tabbar-fixed-wrapper"
+      className="fixed bottom-3 sm:bottom-6 left-0 right-0 z-50 flex justify-center pointer-events-none px-2.5 sm:px-6 pb-[env(safe-area-inset-bottom)]"
     >
-      {tabs.map((tab) => (
-        <NavLink
-          key={tab.path}
-          to={tab.path}
-          className={({ isActive }) =>
-            cn(
-              "relative flex flex-col items-center justify-center w-12 h-12 transition-all duration-300",
-              isActive ? 'scale-110' : 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0'
-            )
-          }
-        >
-          {({ isActive }) => (
-            <>
-              <div className={cn(
-                "w-11 h-11 rounded-2xl flex items-center justify-center transition-all duration-300",
-                isActive 
-                  ? "bg-slate-900 text-white shadow-lg" 
-                  : "text-slate-400"
-              )}>
-                <tab.icon className={cn("w-5 h-5", isActive ? "stroke-[2.5]" : "stroke-[2]")} />
-              </div>
-              {isActive && (
-                <motion.div
-                  layoutId="tab-underline"
-                  className="absolute -bottom-2 w-1 h-1 bg-slate-900 rounded-full"
-                />
-              )}
-            </>
-          )}
-        </NavLink>
-      ))}
-    </motion.div>
+      <motion.div 
+        initial={false}
+        animate={{ 
+          y: isVisible ? 0 : 96, 
+          opacity: isVisible ? 1 : 0,
+          scale: isVisible ? 1 : 0.96
+        }}
+        transition={{ 
+          duration: 0.45, 
+          ease: [0.16, 1, 0.3, 1] // Smooth native iOS easing curve
+        }}
+        style={{ willChange: 'transform, opacity' }}
+        className={cn(
+          "tabbar-container w-full max-w-md pointer-events-auto h-[66px] sm:h-[76px] glass rounded-[26px] sm:rounded-[32px] px-1.5 sm:px-4 flex justify-around items-center shadow-premium border-white/20",
+          !isVisible && "pointer-events-none"
+        )}
+      >
+        {tabs.map((tab) => (
+          <NavLink
+            key={tab.path}
+            to={tab.path}
+            className={({ isActive }) =>
+              cn(
+                "relative flex-1 max-w-[62px] flex flex-col items-center justify-center h-12 transition-all duration-300",
+                isActive ? 'scale-105 sm:scale-110' : 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0'
+              )
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <div className={cn(
+                  "w-10 h-10 sm:w-11 sm:h-11 rounded-2xl flex items-center justify-center transition-all duration-300",
+                  isActive 
+                    ? "bg-slate-900 text-white shadow-lg" 
+                    : "text-slate-400"
+                )}>
+                  <tab.icon className={cn("w-5 h-5", isActive ? "stroke-[2.5]" : "stroke-[2]")} />
+                </div>
+                {isActive && (
+                  <motion.div
+                    layoutId="tab-underline"
+                    className="absolute -bottom-1.5 sm:-bottom-2 w-1 h-1 bg-slate-900 rounded-full"
+                  />
+                )}
+              </>
+            )}
+          </NavLink>
+        ))}
+      </motion.div>
+    </div>
   );
 };
 

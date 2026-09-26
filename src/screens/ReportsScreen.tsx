@@ -30,10 +30,12 @@ import { db, auth } from '../lib/firebase';
 import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 import { SessionService } from '../services/sessionService';
 import { LocalModelService } from '../services/localModelService';
+import { DeviceRequiredModal } from '../components/modals/DeviceRequiredModal';
 
 export const ReportsScreen: React.FC = () => {
   const dispatch = useDispatch();
-  const { thresholds, score, incidents, totalSessionSeconds, baselineAngle, isRecordingSession } = useSelector((state: RootState) => state.posture);
+  const { thresholds, score, incidents, totalSessionSeconds, baselineAngle, isRecordingSession, isSimulating } = useSelector((state: RootState) => state.posture);
+  const device = useSelector((state: RootState) => state.device);
   const user = useSelector((state: RootState) => state.auth.user);
   
   // View states
@@ -41,6 +43,7 @@ export const ReportsScreen: React.FC = () => {
   const [viewMode, setViewMode] = useState<'patient' | 'physio'>('patient');
   const [isGenerating, setIsGenerating] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [isDeviceRequiredModalOpen, setIsDeviceRequiredModalOpen] = useState(false);
   const [sessions, setSessions] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -109,7 +112,7 @@ export const ReportsScreen: React.FC = () => {
   <p><strong>Patient Name:</strong> ${user?.name || 'Rahul (Rahul@gmail.com)'}</p>
   <p><strong>Date of Analysis:</strong> ${new Date().toLocaleString()}</p>
   <p><strong>Integrity Score Baseline:</strong> ${Math.round(score)}%</p>
-  <p><strong>Clinical Device Setup:</strong> 3-Axis Thoracic Bio-Sensor (Calibrated at ${baselineAngle}°)</p>
+  <p><strong>Clinical Device Setup:</strong> 3-Axis Thoracic Bio-Sensor (Calibrated at ${Math.round(baselineAngle)}°)</p>
 
   <div class="alert-banner">
     <strong>Orthopedic Clinician Summary Note:</strong><br>
@@ -118,6 +121,16 @@ export const ReportsScreen: React.FC = () => {
 
   <h2>1. Orthopedic Strain & Joint Torque Analysis</h2>
   <div class="grid">
+    <div class="card">
+      <div class="label">Kenneth Hansraj Cervical Load</div>
+      <div class="metric-val">${localMetrics.cervicalSpineLoadHansrajLbs || localMetrics.upperBackStrainLbs} lbs</div>
+      <p style="font-size: 11px; margin: 4px 0 0; color: #64748b;">Hansraj (2014) model: ${localMetrics.cervicalSpineLoadHansrajKg || (localMetrics.upperBackStrainLbs * 0.45).toFixed(1)} kg (${localMetrics.cervicalStressZone || 'Cervical alignment'})</p>
+    </div>
+    <div class="card">
+      <div class="label">Inverse Dynamics C7/T1 Moment</div>
+      <div class="metric-val">${(localMetrics.cervicalTorqueNm || 0).toFixed(2)} N·m</div>
+      <p style="font-size: 11px; margin: 4px 0 0; color: #64748b;">Net gravitational & dynamic torque at cervical-thoracic pivot</p>
+    </div>
     <div class="card">
       <div class="label">Average Thoracic Load (Equivalent Pressure)</div>
       <div class="metric-val">${localMetrics.averageThoracicLoadLbs} lbs</div>
@@ -308,7 +321,13 @@ export const ReportsScreen: React.FC = () => {
               Biomechanical telemetry logs, paraspinal joint load torque, estimated muscle fatigue models, and personalized rehabilitation plans are compiled dynamically once you start recording your posture tracking session.
             </p>
             <button 
-              onClick={() => dispatch(setIsRecordingSession(true))}
+              onClick={() => {
+                if (!device.isConnected && !isSimulating) {
+                  setIsDeviceRequiredModalOpen(true);
+                } else {
+                  dispatch(setIsRecordingSession(true));
+                }
+              }}
               className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-lg shadow-indigo-600/10"
             >
               Start Recording Session
@@ -860,6 +879,12 @@ export const ReportsScreen: React.FC = () => {
           </div>
         )}
       </AnimatePresence>
+
+      <DeviceRequiredModal
+        isOpen={isDeviceRequiredModalOpen}
+        onClose={() => setIsDeviceRequiredModalOpen(false)}
+        onConnectedAndStart={() => dispatch(setIsRecordingSession(true))}
+      />
     </div>
   );
 };

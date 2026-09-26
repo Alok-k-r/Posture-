@@ -1,7 +1,21 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import { registerSW } from 'virtual:pwa-register';
+
+// Register Service Worker for offline capability & PWA installability in production builds
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  registerSW({
+    immediate: true,
+    onNeedRefresh() {
+      console.log('PostureCare update available.');
+    },
+    onOfflineReady() {
+      console.log('PostureCare is ready to work offline.');
+    },
+  });
+}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

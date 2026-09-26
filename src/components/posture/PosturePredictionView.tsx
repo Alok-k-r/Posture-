@@ -18,8 +18,10 @@ import {
   Info, 
   Activity, 
   Flame, 
-  ArrowUpRight 
+  ArrowUpRight,
+  Dumbbell
 } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { 
   ResponsiveContainer, 
   AreaChart, 
@@ -56,8 +58,9 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
   const [selectedTarget, setSelectedTarget] = useState<number>(90);
   const [isConsultingAi, setIsConsultingAi] = useState<boolean>(false);
   const [aiPrognosis, setAiPrognosis] = useState<string | null>(null);
+  const [ingestionRev, setIngestionRev] = useState<number>(0);
 
-  // Re-run ML model whenever target or session history updates
+  // Re-run ML model whenever target, session history, or active neuro-training ingestion updates
   const forecast: PostureForecastData = useMemo(() => {
     return PostureMlForecastService.calculateForecast(
       recentSessions,
@@ -65,7 +68,24 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
       selectedTarget,
       userProfile
     );
-  }, [recentSessions, currentScore, selectedTarget, userProfile]);
+  }, [recentSessions, currentScore, selectedTarget, userProfile, ingestionRev]);
+
+  const handleQuickDrill = () => {
+    PostureMlForecastService.logCompletedExercise(
+      `drill-${Date.now()}`,
+      'Cervical Retraction & Scapular Lock',
+      30,
+      'Upper Trapezius & Rhomboids'
+    );
+    setIngestionRev(r => r + 1);
+    toast.success("Neuro-drill logged! Continuous ML engine updated your trajectory velocity.");
+  };
+
+  const handleQuickBreak = () => {
+    PostureMlForecastService.logBreakEvent(2, 'micro-break');
+    setIngestionRev(r => r + 1);
+    toast.success("Ergonomic break logged! Paraspinal fatigue dampening applied to forecast.");
+  };
 
   const handleConsultAi = async () => {
     setIsConsultingAi(true);
@@ -294,33 +314,61 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
             </p>
           </div>
         </div>
+
+        {/* Immediate Ingestion & Neuro-Training Interactive Triggers */}
+        <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-100">
+          <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider mr-1">
+            Live Interventions:
+          </span>
+          <button
+            type="button"
+            onClick={handleQuickDrill}
+            className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-black uppercase tracking-wider border border-indigo-200 flex items-center gap-1.5 transition-all active:scale-95 shadow-2xs cursor-pointer"
+            title="Perform and log a 30s neuromuscular activation drill"
+          >
+            <Dumbbell size={13} className="text-indigo-600" />
+            <span>Complete 30s Neuro Drill</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleQuickBreak}
+            className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-black uppercase tracking-wider border border-emerald-200 flex items-center gap-1.5 transition-all active:scale-95 shadow-2xs cursor-pointer"
+            title="Log an active ergonomic recovery break"
+          >
+            <Zap size={13} className="text-emerald-600" />
+            <span>Log 2m Posture Break</span>
+          </button>
+        </div>
       </div>
 
       {/* 2-Column Section: 14-Day Trajectory Curve + Circadian Peak Slouch Breakdown */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ML Forecast Trajectory Chart */}
         <div className="bg-white p-6 rounded-[36px] border border-slate-100 shadow-soft space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 gap-2">
             <div className="flex items-center gap-2">
               <Activity size={16} className="text-indigo-600" />
               <div>
                 <h3 className="text-sm font-black text-slate-900">14-Day Predictive Posture Path</h3>
-                <p className="text-[11px] text-slate-500 font-medium">Historical baseline & projected ML curve</p>
+                <p className="text-[11px] text-slate-500 font-medium">Real historical anchor & 14-day forward projection</p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 text-[10px] font-bold">
-              <span className="flex items-center gap-1 text-slate-600">
-                <span className="w-2 h-2 rounded-full bg-indigo-600" /> Historical
+            <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold">
+              <span className="flex items-center gap-1 text-indigo-700">
+                <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 border border-white" /> Recorded
               </span>
               <span className="flex items-center gap-1 text-emerald-600">
-                <span className="w-2 h-2 rounded-full bg-emerald-500" /> Projected
+                <span className="w-3 h-0.5 border-t-2 border-dashed border-emerald-500 inline-block" /> 14d Forecast
+              </span>
+              <span className="flex items-center gap-1 text-slate-400">
+                <span className="w-2 h-2 rounded bg-emerald-100" /> 95% CI
               </span>
             </div>
           </div>
 
           {/* Recharts Area Chart */}
-          <div className="h-56 w-full pt-2">
+          <div className="h-60 w-full pt-2">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart 
                 data={forecast.forecastCurve} 
@@ -328,25 +376,34 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
               >
                 <defs>
                   <linearGradient id="projectedGradient" x1="0" y1="0" x2="0" y2="100%">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.25}/>
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
                     <stop offset="95%" stopColor="#10b981" stopOpacity={0.0}/>
                   </linearGradient>
                 </defs>
-                <XAxis dataKey="dayLabel" tick={{ fontSize: 10 }} stroke="#94a3b8" />
-                <YAxis domain={[40, 100]} tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                <XAxis dataKey="dayLabel" tick={{ fontSize: 9 }} stroke="#94a3b8" />
+                <YAxis domain={[35, 100]} tick={{ fontSize: 10 }} stroke="#94a3b8" />
                 <Tooltip
                   content={({ active, payload }) => {
                     if (active && payload && payload.length) {
                       const data = payload[0].payload;
                       return (
-                        <div className="bg-slate-900 text-white p-2.5 rounded-xl text-[11px] shadow-lg border border-slate-800 space-y-0.5">
-                          <div className="font-bold text-slate-300">{data.date} ({data.dayLabel})</div>
-                          <div className="text-sm font-black text-emerald-400">
-                            {data.isHistorical ? 'Actual' : 'Projected'}: {data.projectedScore}%
+                        <div className="bg-slate-900 text-white p-3 rounded-2xl text-[11px] shadow-xl border border-slate-800 space-y-1">
+                          <div className="font-bold text-slate-300 flex items-center justify-between gap-3">
+                            <span>{data.date}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10">{data.dayLabel}</span>
                           </div>
-                          {!data.isHistorical && (
-                            <div className="text-[9px] text-slate-400">
-                              95% CI: {data.lowerConfidenceBound}% – {data.upperConfidenceBound}%
+                          {data.isHistorical ? (
+                            <div className="text-sm font-black text-indigo-400">
+                              Recorded Session: {data.actualScore}%
+                            </div>
+                          ) : (
+                            <div className="space-y-0.5">
+                              <div className="text-sm font-black text-emerald-400">
+                                14d ML Projection: {data.projectedScore}%
+                              </div>
+                              <div className="text-[9px] text-slate-400">
+                                95% Confidence: {data.lowerConfidenceBound}% – {data.upperConfidenceBound}%
+                              </div>
                             </div>
                           )}
                         </div>
@@ -361,13 +418,33 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
                   strokeDasharray="4 4" 
                   label={{ value: `Goal (${selectedTarget}%)`, fill: '#6366f1', fontSize: 10, position: 'insideTopRight' }} 
                 />
+                {/* 95% Confidence Band */}
+                <Area 
+                  type="monotone" 
+                  dataKey="upperConfidenceBound" 
+                  stroke="none" 
+                  fill="#10b981" 
+                  fillOpacity={0.08} 
+                />
+                {/* ML Projection Trend */}
                 <Area 
                   type="monotone" 
                   dataKey="projectedScore" 
                   stroke="#10b981" 
-                  strokeWidth={3} 
+                  strokeWidth={2.5} 
+                  strokeDasharray="3 3"
                   fillOpacity={1} 
                   fill="url(#projectedGradient)" 
+                />
+                {/* Actual Real Historical Data Points */}
+                <Area 
+                  type="monotone" 
+                  dataKey="actualScore" 
+                  stroke="#6366f1" 
+                  strokeWidth={3} 
+                  fill="none" 
+                  dot={{ r: 4, fill: '#6366f1', strokeWidth: 2, stroke: '#ffffff' }}
+                  connectNulls={true} 
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -376,7 +453,7 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
           <div className="p-3 bg-emerald-50/70 border border-emerald-100 rounded-2xl text-[11px] text-emerald-900 font-medium flex items-center gap-2">
             <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
             <span>
-              <strong>Confidence Rating:</strong> Based on OLS regression of {forecast.totalAnalyzedSessions} session data points with a steady +{forecast.improvementVelocityPerDay}% daily velocity.
+              <strong>Confidence Rating ({forecast.confidenceScore}%):</strong> Based on OLS regression of {forecast.totalAnalyzedSessions} session data points with a steady {forecast.improvementVelocityPerDay > 0 ? '+' : ''}{forecast.improvementVelocityPerDay}% daily velocity.
             </span>
           </div>
         </div>
@@ -385,27 +462,43 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
         <div className="bg-white p-6 rounded-[36px] border border-slate-100 shadow-soft space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <div className="flex items-center gap-2">
-              <Clock size={16} className="text-rose-500" />
+              <Clock size={16} className={forecast.peakSlouchPercentage === 0 ? "text-emerald-500" : "text-rose-500"} />
               <div>
                 <h3 className="text-sm font-black text-slate-900">Peak Slouch Time Window</h3>
                 <p className="text-[11px] text-slate-500 font-medium">Circadian postural fatigue distribution</p>
               </div>
             </div>
 
-            <span className="px-2.5 py-1 rounded-full bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-black uppercase">
+            <span className={cn(
+              "px-2.5 py-1 rounded-full text-[10px] font-black uppercase border",
+              forecast.peakSlouchPercentage === 0 
+                ? "bg-emerald-50 border-emerald-200 text-emerald-700" 
+                : "bg-rose-50 border-rose-200 text-rose-700"
+            )}>
               Peak: {forecast.peakSlouchWindow}
             </span>
           </div>
 
-          {/* Peak Warning Banner */}
-          <div className="p-4 rounded-2xl bg-rose-50/80 border border-rose-100 space-y-1.5">
+          {/* Peak Warning / Optimal Banner */}
+          <div className={cn(
+            "p-4 rounded-2xl border space-y-1.5",
+            forecast.peakSlouchPercentage === 0 
+              ? "bg-emerald-50/80 border-emerald-100 text-emerald-900" 
+              : "bg-rose-50/80 border-rose-100 text-rose-900"
+          )}>
             <div className="flex items-center gap-2">
-              <AlertTriangle size={15} className="text-rose-600 shrink-0" />
-              <h4 className="text-xs font-black text-rose-900">
-                Critical Slouch Concentration Detected ({forecast.peakSlouchPercentage}%)
+              {forecast.peakSlouchPercentage === 0 ? (
+                <ShieldCheck size={16} className="text-emerald-600 shrink-0" />
+              ) : (
+                <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+              )}
+              <h4 className={cn("text-xs font-black", forecast.peakSlouchPercentage === 0 ? "text-emerald-900" : "text-rose-900")}>
+                {forecast.peakSlouchPercentage === 0 
+                  ? "Optimal Alignment Maintained (0 Slouches Recorded)" 
+                  : `Critical Slouch Concentration Detected (${forecast.peakSlouchPercentage}%)`}
               </h4>
             </div>
-            <p className="text-[11px] text-rose-800 leading-relaxed font-medium">
+            <p className={cn("text-[11px] leading-relaxed font-medium", forecast.peakSlouchPercentage === 0 ? "text-emerald-800" : "text-rose-800")}>
               {forecast.circadianAdvice}
             </p>
           </div>
@@ -418,7 +511,7 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
 
             <div className="space-y-2">
               {forecast.circadianBreakdown.map((slot) => {
-                const isPeak = slot.range === forecast.peakSlouchWindow;
+                const isPeak = slot.slouchCount > 0 && slot.range === forecast.peakSlouchWindow;
                 return (
                   <div key={slot.label} className="space-y-1">
                     <div className="flex items-center justify-between text-[11px]">
@@ -434,8 +527,8 @@ export const PosturePredictionView: React.FC<PosturePredictionViewProps> = ({
                       <div 
                         className="h-full rounded-full transition-all duration-500"
                         style={{ 
-                          width: `${Math.max(4, slot.percentage)}%`,
-                          backgroundColor: getRiskColor(slot.riskLevel)
+                          width: slot.slouchCount > 0 ? `${Math.max(4, slot.percentage)}%` : '0%',
+                          backgroundColor: slot.slouchCount > 0 ? getRiskColor(slot.riskLevel) : '#e2e8f0'
                         }}
                       />
                     </div>

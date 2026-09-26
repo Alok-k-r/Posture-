@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
+<<<<<<< HEAD
 import { RootState, setIsRecordingSession, setDeviceStatus, setHasPaired } from '../store/store';
 import { bluetoothService } from '../services/bluetoothService';
+=======
+import { RootState, setIsRecordingSession, calculateLiveAlignmentScore } from '../store/store';
+>>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { 
   Shield, 
@@ -18,7 +22,6 @@ import {
   CheckCircle2,
   X,
   ArrowUpRight,
-  RefreshCw,
   Activity,
   Calendar as CalendarIcon,
   Play,
@@ -29,6 +32,7 @@ import { useNavigate } from 'react-router-dom';
 import { LocalModelService, LocalBiomechanicalMetrics } from '../services/localModelService';
 import { SessionService, UnifiedSession } from '../services/sessionService';
 import { auth } from '../lib/firebase';
+import { DeviceRequiredModal } from '../components/modals/DeviceRequiredModal';
 
 export const DashboardScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -39,6 +43,7 @@ export const DashboardScreen: React.FC = () => {
   const { thresholds, streak } = posture;
 
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
+  const [isDeviceRequiredModalOpen, setIsDeviceRequiredModalOpen] = useState(false);
   const [sessions, setSessions] = useState<UnifiedSession[]>([]);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | null>(new Date());
   const [calendarMonthOffset, setCalendarMonthOffset] = useState<number>(0);
@@ -68,7 +73,11 @@ export const DashboardScreen: React.FC = () => {
       // If actively recording, clicking pauses the recording
       dispatch(setIsRecordingSession(false));
     } else {
-      // If paused or stopped, start/resume recording AND navigate directly to posture screen
+      // Only start recording if device is connected or simulator is enabled
+      if (!device.isConnected && !posture.isSimulating) {
+        setIsDeviceRequiredModalOpen(true);
+        return;
+      }
       dispatch(setIsRecordingSession(true));
       navigate('/posture');
     }
@@ -112,11 +121,15 @@ export const DashboardScreen: React.FC = () => {
     totalTodayWeightedScore += (posture.score * activeDuration);
   }
 
+<<<<<<< HEAD
   // Real-time live score fallback: if device is streaming or user is monitoring, reflect current live alignment rating
   const liveAlignmentScore = posture.score > 0 
     ? posture.score 
     : (posture.angle >= thresholds.good ? 100 : posture.angle >= thresholds.warn ? 75 : 50);
 
+=======
+  const liveAlignmentScore = calculateLiveAlignmentScore(posture.angle, posture.baselineAngle, thresholds);
+>>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
   const combinedTodayIntegrity = combinedTodayTotalSecs > 0
     ? Math.round(totalTodayWeightedScore / combinedTodayTotalSecs)
     : (todayCompletedSessions.length > 0 ? todayCompletedSessions[0].score : (posture.isRecordingSession ? posture.score : liveAlignmentScore));
@@ -233,35 +246,65 @@ export const DashboardScreen: React.FC = () => {
     ? Math.max(posture.maxFocusDuration || 0, activeGood)
     : todayCompletedSessions.reduce((max, s) => Math.max(max, s.maxFocusStreak || s.goodSessionSeconds || 0), 0);
 
-  const userName = user?.name ? user.name.toUpperCase() : 'PRITHVI';
-
   return (
-    <div className="space-y-5 max-w-md md:max-w-xl mx-auto px-4 pt-1 pb-32 font-sans selection:bg-indigo-100">
+    <div className="space-y-4 max-w-md md:max-w-xl mx-auto px-4 pt-1 pb-32 font-sans selection:bg-indigo-100">
       
-      {/* 1. TOP SYNC BANNER */}
-      <div className="bg-[#1d6bf3] text-white px-4 py-2.5 rounded-xl flex items-center justify-between shadow-xs -mx-1">
-        <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider">
-          <RefreshCw size={14} className="animate-spin" />
-          <span>SYNCING CHANGES...</span>
-        </div>
-        <span className="text-[11px] font-bold text-white/90">
-          10 items pending
-        </span>
-      </div>
-
-      {/* 2. HEADER: CONTROL & HELLO PRITHVI + STATUS PILLS + EXACT DOCTOR AVATAR BOX */}
-      <div className="flex items-start justify-between gap-3 pt-2">
-        {/* Left: Control Label & Name */}
-        <div className="pt-0.5">
-          <span className="text-[11px] font-black text-slate-400 tracking-[0.2em] uppercase block">
-            CONTROL
+      {/* HEADER: ONLINE STATUS, RECORDING BUTTON & PROFILE AVATAR AT THE SAME LEVEL */}
+      <div className="flex items-center justify-between gap-2.5 pt-1">
+        {/* Left: Online Status + Recording Button */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={cn(
+            "px-2.5 py-1.5 rounded-full text-[10px] sm:text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors shadow-2xs shrink-0",
+            device.isConnected 
+              ? "bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]" 
+              : "bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3]"
+          )}>
+            {device.isConnected ? (
+              <Bluetooth size={12} className="inline stroke-[2.5] text-[#059669]" />
+            ) : (
+              <WifiOff size={11} className="inline stroke-[2.5]" />
+            )}
+            {device.isConnected ? 'ONLINE' : 'OFFLINE'}
           </span>
-          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-none mt-1">
-            Hello, <br />
-            <span className="font-black text-slate-950 text-3xl sm:text-4xl">{userName}</span>
-          </h1>
+
+          <button
+            onClick={handleRecordingToggle}
+            className={cn(
+              "px-3 py-1.5 rounded-full text-[10px] sm:text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 border transition-all active:scale-95 cursor-pointer shadow-2xs select-none shrink-0",
+              posture.isRecordingSession
+                ? "bg-[#ffe4e6] text-[#e11d48] border-[#fecdd3] hover:bg-[#fed7aa]/30"
+                : (posture.totalSessionSeconds || 0) > 0
+                ? "bg-[#fef3c7] text-[#d97706] border-[#fde68a] hover:bg-[#fef08a]"
+                : "bg-[#ede9fe] text-[#6366f1] border-[#ddd6fe] hover:bg-[#e0e7ff]"
+            )}
+            title={
+              posture.isRecordingSession
+                ? "Recording session in progress. Click to pause."
+                : (posture.totalSessionSeconds || 0) > 0
+                ? "Session paused. Click to resume and open Posture."
+                : "Click to start recording and open Posture."
+            }
+          >
+            {posture.isRecordingSession ? (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-[#e11d48] animate-pulse shrink-0" />
+                <span>RECORDING IN PROGRESS</span>
+              </>
+            ) : (posture.totalSessionSeconds || 0) > 0 ? (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-[#d97706] shrink-0" />
+                <span>PAUSED</span>
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-[#6366f1] shrink-0" />
+                <span>START RECORDING</span>
+              </>
+            )}
+          </button>
         </div>
 
+<<<<<<< HEAD
         {/* Right: Status Pills & Doctor Avatar Box */}
         <div className="flex items-center gap-2.5">
           {/* Status Pills */}
@@ -334,9 +377,13 @@ export const DashboardScreen: React.FC = () => {
           </div>
 
           {/* Large Avatar Box */}
+=======
+        {/* Right: Profile Avatar Box */}
+        <div className="flex items-center shrink-0">
+>>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
           <button 
             onClick={() => navigate('/profile')}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-white border-2 border-white shadow-md overflow-hidden flex items-center justify-center shrink-0 active:scale-95 transition-transform"
+            className="w-12 h-12 rounded-full bg-white border-2 border-white shadow-md overflow-hidden flex items-center justify-center shrink-0 active:scale-95 transition-transform hover:ring-2 hover:ring-indigo-100"
             title="Profile & Settings"
           >
             {user?.photo ? (
@@ -880,7 +927,7 @@ export const DashboardScreen: React.FC = () => {
                     <span>Thoracic & Paraspinal Tension</span>
                   </div>
                   <p className="text-xs text-indigo-900 leading-relaxed font-medium">
-                    At your current inclination of {Math.round(posture.angle)}°, gravitational torque places <strong className="font-black text-indigo-950">{m.upperBackStrainLbs} lbs</strong> of tensile strain on your upper trapezius and rhomboids.
+                    At your current posture angle of {Math.max(0, Math.min(90, Math.round(posture.angle)))}°, gravitational torque places <strong className="font-black text-indigo-950">{m.upperBackStrainLbs} lbs</strong> of tensile strain on your upper trapezius and rhomboids.
                   </p>
                 </div>
 
@@ -911,6 +958,15 @@ export const DashboardScreen: React.FC = () => {
           </div>
         )}
       </AnimatePresence>
+
+      <DeviceRequiredModal
+        isOpen={isDeviceRequiredModalOpen}
+        onClose={() => setIsDeviceRequiredModalOpen(false)}
+        onConnectedAndStart={() => {
+          dispatch(setIsRecordingSession(true));
+          navigate('/posture');
+        }}
+      />
     </div>
   );
 };

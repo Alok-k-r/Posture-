@@ -10,7 +10,15 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: "500kb" }));
+
+  // Security headers middleware
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    next();
+  });
 
   // CORS middleware for WebViews and local development origins
   app.use((req, res, next) => {
@@ -22,6 +30,11 @@ async function startServer() {
       return;
     }
     next();
+  });
+
+  // Health check endpoint for Cloud Run and platform monitors
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok" });
   });
 
   // Lazy initialize GoogleGenAI inside route handlers or a helper
@@ -53,6 +66,8 @@ async function startServer() {
     const ai = getAI();
     const models = params.preferredModels || [
       "gemini-2.5-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-flash-latest",
       "gemini-2.0-flash",
       "gemini-1.5-flash"
     ];
@@ -112,8 +127,9 @@ async function startServer() {
     });
   };
 
-  // Apply Rate-limiting to all AI API endpoints
+  // Apply Rate-limiting to all AI API & vitals telemetry endpoints
   app.use("/api/gemini", rateLimiter);
+  app.use("/api/vitals", rateLimiter);
 
   // API Routes
   app.post("/api/gemini/analyze", async (req, res) => {
@@ -307,8 +323,8 @@ Format your response in clean Markdown with clear headings and bullet points.`;
       }
 
       // Mitigation for Prompt-size Cost Abuse and Context Overflow
-      if (message.length > 50000) {
-        res.status(400).json({ error: "Message exceeds maximum allowed character limit of 50000." });
+      if (message.length > 2000) {
+        res.status(400).json({ error: "Message exceeds maximum allowed character limit of 2000." });
         return;
       }
 
@@ -327,6 +343,169 @@ Provide a crisp, clear, and professional medical answer. If providing a summary,
       res.json({ text: response.text });
     } catch (error: any) {
       handleServerError(res, error, "Failed to process message with AI assistant");
+    }
+  });
+
+  // --- IN-MEMORY VITALS TELEMETRY DATASTORE & BUFFER ---
+  interface VitalsRecord {
+    id: string;
+    heartRate: number;
+    spo2: number;
+    status: string;
+    postureAngle?: number;
+    stressIndex: number;
+    timestamp: string;
+    deviceId: string;
+  }
+
+  const vitalsStore: VitalsRecord[] = [];
+
+  app.post("/api/vitals/telemetry", (req, res) => {
+    try {
+      const { heartRate, spo2, status, postureAngle, deviceId, timestamp } = req.body;
+
+      if (typeof heartRate !== "number" || isNaN(heartRate) || heartRate < 30 || heartRate > 220) {
+        res.status(400).json({ error: "Invalid heartRate: must be a physiological value between 30 and 220 BPM." });
+        return;
+      }
+
+      if (typeof spo2 !== "number" || isNaN(spo2) || spo2 < 70 || spo2 > 100) {
+        res.status(400).json({ error: "Invalid spo2: must be a percentage between 70 and 100%." });
+        return;
+      }
+
+      // Compute Thoracic-Autonomic Stress Index (0-100)
+      // Slouching combined with elevated heart rate indicates postural fatigue & thoracic strain
+      const angleDeviation = typeof postureAngle === 'number' ? Math.abs(postureAngle) : 0;
+      const hrElevated = Math.max(0, heartRate - 70);
+      const o2Drop = Math.max(0, 99 - spo2);
+      const stressIndex = Math.min(100, Math.round((angleDeviation * 1.5) + (hrElevated * 0.8) + (o2Drop * 4)));
+
+      const record: VitalsRecord = {
+        id: `VIT-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+        heartRate: Math.round(heartRate),
+        spo2: Math.round(spo2),
+        status: status || 'live',
+        postureAngle: typeof postureAngle === 'number' ? postureAngle : undefined,
+        stressIndex,
+        timestamp: timestamp || new Date().toISOString(),
+        deviceId: deviceId || 'wearable-pod-01'
+      };
+
+      vitalsStore.push(record);
+      if (vitalsStore.length > 500) {
+        vitalsStore.shift();
+      }
+
+      // Compute rolling metrics
+      const total = vitalsStore.length;
+      const allHr = vitalsStore.map(r => r.heartRate);
+      const allSpo2 = vitalsStore.map(r => r.spo2);
+      const minHr = Math.min(...allHr);
+      const maxHr = Math.max(...allHr);
+      const avgHr = Math.round(allHr.reduce((a, b) => a + b, 0) / total);
+      const avgSpo2 = Math.round(allSpo2.reduce((a, b) => a + b, 0) / total);
+
+      // Resting HR is bottom 20th percentile
+      const sortedHr = [...allHr].sort((a, b) => a - b);
+      const restingIndex = Math.max(0, Math.floor(sortedHr.length * 0.2));
+      const restingHeartRate = sortedHr[restingIndex];
+
+      // HRV Root Mean Square Successive Differences
+      let hrvEstimate = 48;
+      if (vitalsStore.length >= 4) {
+        const recent = vitalsStore.slice(-15);
+        let diffSum = 0;
+        for (let i = 1; i < recent.length; i++) {
+          const diff = (60000 / recent[i].heartRate) - (60000 / recent[i - 1].heartRate);
+          diffSum += diff * diff;
+        }
+        hrvEstimate = Math.round(Math.sqrt(diffSum / (recent.length - 1)));
+      }
+
+      res.json({
+        success: true,
+        reading: record,
+        summary: {
+          restingHeartRate,
+          avgHeartRate: avgHr,
+          avgSpo2,
+          minHeartRate: minHr,
+          maxHeartRate: maxHr,
+          totalReadings: total,
+          stressIndex,
+          hrvEstimate,
+        }
+      });
+    } catch (error: any) {
+      handleServerError(res, error, "Failed to record vitals telemetry");
+    }
+  });
+
+  app.get("/api/vitals/history", (req, res) => {
+    try {
+      const recent = vitalsStore.slice(-60);
+      const total = vitalsStore.length;
+      
+      let summary = null;
+      if (total > 0) {
+        const allHr = vitalsStore.map(r => r.heartRate);
+        const allSpo2 = vitalsStore.map(r => r.spo2);
+        summary = {
+          restingHeartRate: Math.min(...allHr),
+          avgHeartRate: Math.round(allHr.reduce((a, b) => a + b, 0) / total),
+          avgSpo2: Math.round(allSpo2.reduce((a, b) => a + b, 0) / total),
+          minHeartRate: Math.min(...allHr),
+          maxHeartRate: Math.max(...allHr),
+          totalReadings: total,
+          stressIndex: recent[recent.length - 1]?.stressIndex || 12,
+          hrvEstimate: 48,
+        };
+      }
+
+      res.json({
+        history: recent,
+        summary
+      });
+    } catch (error: any) {
+      handleServerError(res, error, "Failed to retrieve vitals history");
+    }
+  });
+
+  app.post("/api/vitals/analyze-correlation", async (req, res) => {
+    try {
+      const { heartRate, spo2, postureAngle, postureScore, vitalsHistory } = req.body;
+
+      const angle = typeof postureAngle === 'number' ? postureAngle : 18;
+      const score = typeof postureScore === 'number' ? postureScore : 82;
+      const hr = typeof heartRate === 'number' ? heartRate : 74;
+      const ox = typeof spo2 === 'number' ? spo2 : 98;
+
+      const prompt = `Provide an expert clinical correlation between this patient's spinal ergonomics and real-time cardiovascular telemetry:
+- Current Pitch Slouch Angle: ${angle.toFixed(1)}°
+- Posture Integrity Score: ${score}%
+- Live Heart Rate: ${hr} BPM
+- Blood Oxygenation (SpO2): ${ox}%
+- Vitals Reading Samples Count: ${Array.isArray(vitalsHistory) ? vitalsHistory.length : 0}
+
+Please analyze:
+1. **Thoracic Excursion & Diaphragmatic Mechanics**: How the current spinal alignment affects intercostal expansion, lung vital capacity, and arterial oxygenation.
+2. **Autonomic & Cardiovascular Tone**: How prolonged forward neck flexion or thoracic kyphosis increases sympathetic tension or influences vagal tone (HRV).
+3. **Immediate Clinical Ergonomic Prescription**: 2 targeted micro-adjustments to optimize both spinal alignment and pulmonary ventilation.
+
+Format with clear Markdown headings and bullet points. Tone: clinical, encouraging, biomechanically rigorous.`;
+
+      const response = await generateContentWithFallback({
+        contents: prompt,
+        preferredModels: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+        config: {
+          systemInstruction: "You are an expert Cardiopulmonary Physical Therapist and Ergonomist. Detail the biomechanical and cardiopulmonary linkages between spinal curvature, thoracic ribcage capacity, and cardiovascular autonomic tone.",
+        }
+      });
+
+      res.json({ analysis: response.text });
+    } catch (error: any) {
+      handleServerError(res, error, "Failed to run vitals correlation analysis");
     }
   });
 

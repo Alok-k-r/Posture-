@@ -1,10 +1,19 @@
+<<<<<<< HEAD
 import { store, updateAngle, updateBattery, setDeviceStatus, setHasPaired, setIsRecordingSession } from '../store/store';
+=======
+import { store, updateAngle, updateBattery, setDeviceStatus, setHasPaired, updateVitals } from '../store/store';
+import { vitalsService } from './vitalsService';
+import { ImuTelemetryFilter } from './biomechanicsEngine';
+>>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
 
 // BLE GATT Profile Constants - Aligned with PosturePal ESP32 firmware
 export const POSTURE_SERVICE_UUID = '00001830-0000-1000-8000-00805f9b34fb';
 export const CHARACTERISTIC_ANGLE_UUID = '00002a5a-0000-1000-8000-00805f9b34fb';
 export const CHARACTERISTIC_BATT_UUID = '00002a19-0000-1000-8000-00805f9b34fb';
 export const CHARACTERISTIC_CONFIG_UUID = '00002a5c-0000-1000-8000-00805f9b34fb';
+export const CHARACTERISTIC_VITALS_UUID = '00002a5e-0000-1000-8000-00805f9b34fb';
+export const HEART_RATE_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb';
+export const CHARACTERISTIC_HR_UUID = '00002a37-0000-1000-8000-00805f9b34fb';
 
 class BluetoothService {
   private device: any = null;
@@ -139,9 +148,71 @@ class BluetoothService {
         console.warn('Config characteristic not found or not writable:', err);
       }
 
+      // Optional: Fetch Vitals characteristic if present in firmware
+      try {
+        const vitalsChar = await service.getCharacteristic(CHARACTERISTIC_VITALS_UUID);
+        await vitalsChar.startNotifications();
+        vitalsChar.addEventListener('characteristicvaluechanged', (e: any) => {
+          try {
+            const view = e.target.value;
+            const hr = view.getUint8(0);
+            const spo2 = view.getUint8(1);
+            if (hr > 30 && hr < 220) {
+              const currentAngle = store.getState().posture.angle;
+              vitalsService.logTelemetry({
+                heartRate: hr,
+                spo2: (spo2 >= 70 && spo2 <= 100) ? spo2 : 98,
+                status: 'live',
+                postureAngle: currentAngle,
+                deviceId: this.device?.id || 'ble-hardware-pod'
+              });
+            }
+          } catch (err) {
+            console.warn('Failed to parse vitals packet:', err);
+          }
+        });
+        console.log('✅ Vitals characteristic notifications active.');
+      } catch {
+        // Hardware firmware may transmit posture only
+      }
+
+      // Check for standard Bluetooth SIG Heart Rate Service (0x180D) if available
+      try {
+        const hrService = await this.server.getPrimaryService(HEART_RATE_SERVICE_UUID);
+        if (hrService) {
+          const hrChar = await hrService.getCharacteristic(CHARACTERISTIC_HR_UUID);
+          await hrChar.startNotifications();
+          hrChar.addEventListener('characteristicvaluechanged', (e: any) => {
+            try {
+              const view = e.target.value;
+              const flags = view.getUint8(0);
+              // Bit 0: 0 = 8-bit BPM, 1 = 16-bit BPM
+              const is16Bit = (flags & 0x01) !== 0;
+              const hr = is16Bit ? view.getUint16(1, true) : view.getUint8(1);
+              if (hr > 30 && hr < 220) {
+                const currentAngle = store.getState().posture.angle;
+                vitalsService.logTelemetry({
+                  heartRate: hr,
+                  spo2: store.getState().vitals.spo2 || 98,
+                  status: 'live',
+                  postureAngle: currentAngle,
+                  deviceId: this.device?.id || 'ble-hr-sensor'
+                });
+              }
+            } catch (hrErr) {
+              console.warn('Failed to parse standard BLE HR packet:', hrErr);
+            }
+          });
+          console.log('✅ Standard BLE Heart Rate service notifications active.');
+        }
+      } catch {
+        // Standard HR service not advertised, continue
+      }
+
       // Successfully paired and connected
       store.dispatch(setHasPaired(true));
       store.dispatch(setDeviceStatus(true));
+      store.dispatch(updateVitals({ status: 'live' }));
       console.log('✅ Bluetooth Low Energy connected and listening!');
       return true;
     } catch (error) {
@@ -274,6 +345,7 @@ class BluetoothService {
 
     try {
       const view = target.value; // DataView
+<<<<<<< HEAD
       const angle = this.parseBleAngle(view);
       if (angle !== null && !isNaN(angle)) {
         store.dispatch(updateAngle(angle));
@@ -287,6 +359,14 @@ class BluetoothService {
       } else {
         console.warn('Could not parse BLE angle packet:', view);
       }
+=======
+      // ESP32 sends 2-byte signed integer (int16_t) little-endian
+      const rawAngle = view.getInt16(0, true);
+      // Tier 2: Real-time Complementary / Madgwick filter rejects transient spikes & stabilizes telemetry
+      const filteredAngle = ImuTelemetryFilter.processSample(rawAngle);
+      store.dispatch(updateAngle(filteredAngle));
+      console.log(`📡 BLE Received Pitch: Raw=${rawAngle}°, Filtered=${filteredAngle}°`);
+>>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
     } catch (err) {
       console.warn('Failed to parse angle packet:', err);
     }
@@ -337,7 +417,26 @@ class BluetoothService {
   }
 
   public async triggerCalibration(): Promise<boolean> {
+<<<<<<< HEAD
     return this.writeConfigPayload({ c: 1 });
+=======
+    if (!this.configCharacteristic) {
+      console.warn('BLE Config Characteristic is not connected or available for calibration.');
+      return false;
+    }
+    try {
+      const payload = { c: 1 };
+      const encoder = new TextEncoder();
+      const data = encoder.encode(JSON.stringify(payload));
+      await this.configCharacteristic.writeValue(data);
+      ImuTelemetryFilter.reset(store.getState().posture.baselineAngle || 90);
+      console.log('✅ Sent physical calibration command ({"c":1}) to ESP32.');
+      return true;
+    } catch (err) {
+      console.error('Failed to write calibration command to ESP32 over BLE:', err);
+      return false;
+    }
+>>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
   }
 
   private handleDisconnected = () => {

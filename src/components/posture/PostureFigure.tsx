@@ -26,8 +26,8 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
 
   const mainColor = getZoneColor(angle);
 
-  // Clamp angle to safe visual bounds
-  const clampedAngle = Math.max(45, Math.min(100, angle));
+  // Clamp angle to safe visual bounds (strictly 0° to 90°)
+  const clampedAngle = Math.max(0, Math.min(90, Math.round(angle)));
   const neckBending = (90 - clampedAngle); 
 
   return (
@@ -39,13 +39,13 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
           opacity: [0.05, 0.1, 0.05]
         }}
         transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-        className="absolute inset-2 rounded-full blur-xl transition-colors duration-500 pointer-events-none"
+        className="absolute inset-2 rounded-full blur-xl transition-colors duration-700 pointer-events-none"
         style={{ backgroundColor: mainColor }}
       />
 
       <svg
         viewBox="0 0 200 200"
-        className="w-full h-full relative z-10 select-none pointer-events-none"
+        className="w-full h-full relative z-10 select-none pointer-events-none overflow-hidden"
       >
         <defs>
           {/* Wearable Clip Sensor Gradient */}
@@ -77,11 +77,11 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
           />
         </g>
 
-        {/* 2. Neck & Head Group with dynamic rotation anchor from base of neck */}
+        {/* 2. Neck & Head Group with dynamic rotation anchor from base of neck - smooth gentle transition */}
         <motion.g
           animate={{ rotate: neckBending * 0.65 }}
           style={{ transformOrigin: '88px 162px' }}
-          transition={{ type: "spring", stiffness: 50, damping: 14 }}
+          transition={{ type: "spring", stiffness: 22, damping: 18, mass: 1.1 }}
         >
           {/* Neck Column */}
           <path
@@ -101,7 +101,7 @@ export const PostureFigure: React.FC<PostureFigureProps> = ({
             strokeLinecap="round"
             strokeOpacity="0.45"
             animate={{ stroke: mainColor }}
-            transition={{ duration: 0.3 }}
+            transition={{ duration: 0.6, ease: "easeInOut" }}
           />
 
           {/* Head & Facial Features Group */}

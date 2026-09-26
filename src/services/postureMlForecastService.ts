@@ -238,20 +238,24 @@ export class PostureMlForecastService {
     const totalSlouches = circadianBreakdown.reduce((sum, s) => sum + s.slouchCount, 0);
     const peakSlouchPercentage = totalSlouches > 0 
       ? Math.round((highestSlot.slouchCount / totalSlouches) * 100)
-      : 42;
+      : 0;
 
-    const peakSlouchWindow = highestSlot.range;
-    const peakSlouchHour = highestSlot.hourStart;
+    const peakSlouchWindow = totalSlouches > 0 
+      ? highestSlot.range 
+      : 'None Detected (Optimal Alignment)';
+    const peakSlouchHour = totalSlouches > 0 ? highestSlot.hourStart : 0;
 
-    let circadianAdvice = "Your posture holds steady throughout the morning, but begins fatiguing after midday.";
-    if (highestSlot.hourStart >= 12 && highestSlot.hourStart < 15) {
-      circadianAdvice = "Post-Lunch Energy Dip: 42%+ of slouches cluster between 12 PM - 3 PM. Set a vibrating haptic alert at 1:45 PM and take a 2-minute thoracic extension walk.";
+    let circadianAdvice = "Your posture holds steady throughout monitored sessions.";
+    if (totalSlouches === 0) {
+      circadianAdvice = "Zero slouch fatigue spikes detected across your sessions. Maintain your active posture sessions and regular breaks to sustain optimal spinal endurance.";
+    } else if (highestSlot.hourStart >= 12 && highestSlot.hourStart < 15) {
+      circadianAdvice = `Post-Lunch Energy Dip: ${peakSlouchPercentage}% of recorded slouches cluster between 12 PM - 3 PM. Set a vibrating haptic alert at 1:45 PM and take a 2-minute thoracic extension walk.`;
     } else if (highestSlot.hourStart >= 15 && highestSlot.hourStart < 18) {
-      circadianAdvice = "Late Afternoon Trapezius Fatigue: Core stabilizer muscles begin collapsing after 3 PM. Perform 5 chin retractions and shoulder blade pinches around 3:30 PM.";
+      circadianAdvice = `Late Afternoon Trapezius Fatigue: ${peakSlouchPercentage}% of recorded slouches occur between 3 PM - 6 PM as core stabilizer muscles tire. Perform 5 chin retractions and shoulder blade pinches around 3:30 PM.`;
     } else if (highestSlot.hourStart >= 18) {
-      circadianAdvice = "Evening Relaxation Collapse: Stance significantly relaxes during evening screen time. Ensure your monitor is at eye-level.";
+      circadianAdvice = `Evening Relaxation Collapse: ${peakSlouchPercentage}% of recorded slouches occur between 6 PM - 9 PM during evening screen time. Ensure your monitor is at eye-level.`;
     } else {
-      circadianAdvice = "Morning Static Tension: Early morning stiffness detected. Start your session with 30 seconds of gentle pectoral doorway stretches.";
+      circadianAdvice = `Morning Static Tension: ${peakSlouchPercentage}% of recorded slouches occur between 6 AM - 12 PM. Start your session with 30 seconds of gentle pectoral doorway stretches.`;
     }
 
     // 4. Neuro-muscular habit consolidation metrics
@@ -401,15 +405,40 @@ export class PostureMlForecastService {
    * Retrieve stored break history
    */
   public static getBreakHistory(): BreakLogEntry[] {
+    const list: BreakLogEntry[] = [];
     try {
-      const raw = localStorage.getItem('posture_break_history');
-      if (raw) {
-        return JSON.parse(raw);
+      // 1. Read breaks logged by active session pause mechanism in Redux
+      const rawRedux = localStorage.getItem('posture_breaks_history');
+      if (rawRedux) {
+        const parsed = JSON.parse(rawRedux);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((b: any) => {
+            list.push({
+              id: b.id || `brk-${b.timestamp}`,
+              durationMinutes: Math.max(1, Math.round((b.durationSeconds || 120) / 60)),
+              completedAt: b.timestamp || new Date().toISOString(),
+              type: 'micro-break'
+            });
+          });
+        }
+      }
+
+      // 2. Read direct break log entries
+      const rawDirect = localStorage.getItem('posture_break_history');
+      if (rawDirect) {
+        const parsed = JSON.parse(rawDirect);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((b: any) => {
+            if (!list.some(existing => existing.id === b.id)) {
+              list.push(b);
+            }
+          });
+        }
       }
     } catch (e) {
       console.warn('Failed to parse break history:', e);
     }
-    return [];
+    return list;
   }
 
   /**
@@ -429,40 +458,33 @@ export class PostureMlForecastService {
     let totalAssigned = 0;
     if (sessions.length > 0) {
       for (const session of sessions) {
-        const sessionDate = new Date(session.date);
+        const sessionDate = new Date(session.date || session.startTime || Date.now());
         const hour = sessionDate.getHours();
-        const slouches = session.slouches || 1;
-
-        const targetSlot = slots.find(s => hour >= s.hourStart && hour < s.hourEnd) || slots[2];
-        targetSlot.slouchCount += slouches;
-        totalAssigned += slouches;
+        const slouches = typeof session.slouches === 'number' ? session.slouches : 0;
+        if (slouches > 0) {
+          const targetSlot = slots.find(s => hour >= s.hourStart && hour < s.hourEnd) || slots[3];
+          targetSlot.slouchCount += slouches;
+          totalAssigned += slouches;
+        }
       }
     }
 
-    // If no data or single session, seed realistic default clinical distribution based on ergonomic circadian rhythm
-    if (totalAssigned === 0) {
-      slots[0].slouchCount = 2; // 6-9am
-      slots[1].slouchCount = 4; // 9-12pm
-      slots[2].slouchCount = 14; // 12-3pm (Peak 1)
-      slots[3].slouchCount = 10; // 3-6pm (Peak 2)
-      slots[4].slouchCount = 6;  // 6-9pm
-      slots[5].slouchCount = 2;  // 9-12am
-      totalAssigned = 38;
-    }
-
-    for (const slot of slots) {
-      slot.percentage = Math.round((slot.slouchCount / totalAssigned) * 100);
-      if (slot.percentage >= 30) slot.riskLevel = 'Critical';
-      else if (slot.percentage >= 20) slot.riskLevel = 'High';
-      else if (slot.percentage >= 10) slot.riskLevel = 'Moderate';
-      else slot.riskLevel = 'Low';
+    // If no slouch events have occurred, keep real counts at 0
+    if (totalAssigned > 0) {
+      for (const slot of slots) {
+        slot.percentage = Math.round((slot.slouchCount / totalAssigned) * 100);
+        if (slot.percentage >= 35) slot.riskLevel = 'Critical';
+        else if (slot.percentage >= 22) slot.riskLevel = 'High';
+        else if (slot.percentage >= 12) slot.riskLevel = 'Moderate';
+        else slot.riskLevel = 'Low';
+      }
     }
 
     return slots;
   }
 
   /**
-   * Generates a 14-day projection curve combining historical data points with forward ML linear-logistic progression
+   * Generates a 14-day predictive posture path combining real historical session points with forward ML linear-logistic progression
    */
   private static generate14DayCurve(
     sessions: UnifiedSession[],
@@ -473,22 +495,31 @@ export class PostureMlForecastService {
   ) {
     const points = [];
     const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
 
-    // 1. Past 5 days of actual/interpolated data
-    for (let i = 5; i >= 1; i--) {
-      const pastDate = new Date();
-      pastDate.setDate(today.getDate() - i);
-      const dateStr = pastDate.toISOString().split('T')[0];
-      
-      // Look for a session matching this date
-      const matchingSession = sessions.find(s => s.date && s.date.startsWith(dateStr));
-      const histScore = matchingSession 
-        ? matchingSession.score 
-        : Math.max(50, Math.round(currentScore - (i * slope * 0.9)));
+    // Collect distinct historical dates that have actual sessions
+    const sessionDateMap = new Map<string, number>();
+    for (const s of sessions) {
+      if (s.date && typeof s.score === 'number' && s.score > 0) {
+        const dStr = s.date.split('T')[0];
+        // If today, we anchor to currentScore
+        if (dStr !== todayStr) {
+          sessionDateMap.set(dStr, Math.round(s.score));
+        }
+      }
+    }
 
+    // Sort historical dates ascending
+    const sortedPastDates = Array.from(sessionDateMap.keys()).sort();
+    // Keep up to 7 most recent past sessions
+    const recentPastDates = sortedPastDates.slice(-7);
+
+    for (const dStr of recentPastDates) {
+      const pastDate = new Date(dStr + 'T12:00:00');
+      const histScore = sessionDateMap.get(dStr)!;
       points.push({
-        dayLabel: pastDate.toLocaleDateString('en-US', { weekday: 'short' }),
-        date: dateStr,
+        dayLabel: pastDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        date: dStr,
         isHistorical: true,
         actualScore: histScore,
         projectedScore: histScore,
@@ -497,10 +528,10 @@ export class PostureMlForecastService {
       });
     }
 
-    // 2. Today (Current Anchor)
+    // 2. Today (Current Real Alignment Anchor)
     points.push({
       dayLabel: 'Today',
-      date: today.toISOString().split('T')[0],
+      date: todayStr,
       isHistorical: true,
       actualScore: currentScore,
       projectedScore: currentScore,
@@ -508,10 +539,11 @@ export class PostureMlForecastService {
       lowerConfidenceBound: currentScore,
     });
 
-    // 3. Future 8 Days of ML Forecasting
-    for (let i = 1; i <= 8; i++) {
+    // 3. Future 14 Days of ML Predictive Posture Path (+1d through +14d)
+    for (let i = 1; i <= 14; i++) {
       const futureDate = new Date();
       futureDate.setDate(today.getDate() + i);
+      const fDateStr = futureDate.toISOString().split('T')[0];
       
       // Asymptote curve approaching 98%
       const rawGain = i * slope;
@@ -519,13 +551,13 @@ export class PostureMlForecastService {
       const progress = currentScore + Math.min(asymptoticCap, rawGain * (1 - (currentScore / 130)));
       const projected = Math.min(98, Math.round(progress * 10) / 10);
       
-      const errorSpread = Math.min(8, (i * 0.4) + (confidenceMargin * 0.3));
+      const errorSpread = Math.min(10, Math.round(((i * 0.45) + (confidenceMargin * 0.25)) * 10) / 10);
       const upper = Math.min(100, Math.round((projected + errorSpread) * 10) / 10);
-      const lower = Math.max(40, Math.round((projected - errorSpread) * 10) / 10);
+      const lower = Math.max(30, Math.round((projected - errorSpread) * 10) / 10);
 
       points.push({
         dayLabel: `+${i}d`,
-        date: futureDate.toISOString().split('T')[0],
+        date: fDateStr,
         isHistorical: false,
         projectedScore: projected,
         upperConfidenceBound: upper,

@@ -209,11 +209,11 @@ export const ThresholdScreen: React.FC = () => {
         <div className="space-y-4">
           <div className="flex justify-between items-center px-1">
             <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider">Alert Angle Delta</span>
-            <span className="text-sm font-black text-indigo-600">{local.alertAngle}°</span>
+            <span className="text-sm font-black text-indigo-600">{Math.round(Number(local.alertAngle)) || 0}°</span>
           </div>
           <input 
             type="range" min="5" max="30" value={local.alertAngle} 
-            onChange={(e) => setLocal({ ...local, alertAngle: Number(e.target.value) })}
+            onChange={(e) => setLocal({ ...local, alertAngle: Math.round(Number(e.target.value)) })}
             className="w-full h-2 bg-slate-100 rounded-full appearance-none cursor-pointer accent-indigo-600 shadow-inner" 
           />
         </div>
@@ -385,7 +385,7 @@ export const ThresholdScreen: React.FC = () => {
           ].map((t) => (
             <div key={t.key} className={cn("p-4 rounded-3xl text-center space-y-1 shadow-soft", t.color)}>
               <span className="text-[8px] font-black uppercase tracking-widest opacity-60">{t.label}</span>
-              <p className="text-lg font-black">{local[t.key as keyof typeof local]}°</p>
+              <p className="text-lg font-black">{Math.round(Number(local[t.key as keyof typeof local])) || 0}°</p>
             </div>
           ))}
         </div>

@@ -92,7 +92,7 @@ service cloud.firestore {
     }
 
     match /test/{docId} {
-      allow read: if true;
+      allow read: if isSignedIn();
     }
   }
 }

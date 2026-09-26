@@ -1,6 +1,6 @@
 {
   "name": "PostureCare — Smart Healthcare",
   "description": "Smart Healthcare & Posture Monitoring Dashboard mobile-first web app.",
-  "requestFramePermissions": ["notifications", "bluetooth"],
+  "requestFramePermissions": ["notifications", "bluetooth", "geolocation"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -94,9 +94,20 @@
 }
 
 /* Hide TabBar elegantly when modal is open */
-body.modal-open-hide-tabbar .fixed.bottom-6 {
+body.modal-open-hide-tabbar #tabbar-fixed-wrapper,
+body.modal-open-hide-tabbar .tabbar-container {
   opacity: 0 !important;
   pointer-events: none !important;
   transform: translateY(120px) !important;
   transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
+
+/* Global Mobile & APK viewport overflow containment */
+html, body, #root {
+  width: 100%;
+  max-width: 100vw;
+  overflow-x: hidden;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+

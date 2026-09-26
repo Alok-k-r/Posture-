@@ -116,8 +116,12 @@ export const TermsAcceptanceScreen: React.FC = () => {
   };
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
+    try {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        window.print();
+        return;
+      }
 
     if (activeDoc === 'tos') {
       printWindow.document.write(`
@@ -175,6 +179,9 @@ export const TermsAcceptanceScreen: React.FC = () => {
     }
     printWindow.document.close();
     printWindow.print();
+    } catch {
+      window.print();
+    }
   };
 
   return (

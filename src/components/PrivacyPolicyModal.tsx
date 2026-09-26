@@ -47,9 +47,13 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
   );
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-    printWindow.document.write(`
+    try {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        window.print();
+        return;
+      }
+      printWindow.document.write(`
       <html>
         <head>
           <title>${PRIVACY_POLICY_META.appName} - Privacy Policy & Security Standards</title>
@@ -108,6 +112,9 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
     `);
     printWindow.document.close();
     printWindow.print();
+    } catch {
+      window.print();
+    }
   };
 
   const getSectionIcon = (category: string) => {

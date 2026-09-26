@@ -154,6 +154,43 @@ interface PostureState {
   breakHistory: BreakRecord[];
 }
 
+export const calculateLiveAlignmentScore = (
+  angle: number,
+  baselineAngle: number = 90,
+  thresholds: { good: number; warn: number } = { good: 80, warn: 65 }
+): number => {
+  const safeAngle = Math.max(0, Math.min(90, Math.round(Number(angle) || 90)));
+  const safeBase = Math.max(0, Math.min(90, Math.round(Number(baselineAngle) || 90)));
+  const goodThresh = Math.max(0, Math.min(90, Math.round(Number(thresholds.good) || 80)));
+  const warnThresh = Math.max(0, Math.min(90, Math.round(Number(thresholds.warn) || 65)));
+  
+  // Forward tilt deviation from baseline
+  const diff = Math.max(0, Math.min(90, safeBase - safeAngle));
+  
+  // Perfectly upright or within 2 degrees of baseline: 100%
+  if (diff <= 2) {
+    return 100;
+  }
+  
+  // Good posture zone (e.g. 80° - 88° when baseline is 90°)
+  if (safeAngle >= goodThresh) {
+    const range = Math.max(1, safeBase - goodThresh);
+    const ratio = diff / range;
+    return Math.max(90, Math.round(100 - ratio * 10)); // 100% down to 90%
+  }
+  
+  // Warning zone (e.g. 65° - 79°)
+  if (safeAngle >= warnThresh) {
+    const range = Math.max(1, goodThresh - warnThresh);
+    const ratio = (goodThresh - safeAngle) / range;
+    return Math.max(65, Math.round(90 - ratio * 25)); // 90% down to 65%
+  }
+  
+  // Poor / Slouch zone (e.g. < 65°)
+  const severeDiff = warnThresh - safeAngle;
+  return Math.max(20, Math.round(65 - Math.min(1, severeDiff / 25) * 45)); // 65% down to 20%
+};
+
 const postureSlice = createSlice({
   name: 'posture',
   initialState: {
@@ -202,8 +239,11 @@ const postureSlice = createSlice({
   } as PostureState,
   reducers: {
     updateAngle: (state, action: PayloadAction<number>) => {
-      const rounded = Math.round(action.payload);
-      state.angle = rounded;
+      const rawVal = Number(action.payload);
+      const rounded = Math.round(isNaN(rawVal) ? 90 : rawVal);
+      // Angle should strictly be between 0 and 90 only
+      const clamped = Math.max(0, Math.min(90, rounded));
+      state.angle = clamped;
 
       // Auto-check for new calendar day (morning fresh start)
       const todayStr = new Date().toISOString().split('T')[0];
@@ -239,7 +279,7 @@ const postureSlice = createSlice({
       if (state.breakHistory === undefined) state.breakHistory = [];
 
       if (!state.isRecordingSession) {
-        state.score = rounded; // If not recording, let the ring reflect raw live posture
+        state.score = calculateLiveAlignmentScore(clamped, state.baselineAngle, state.thresholds);
       } else {
         state.score = state.integrityScore; // Ensure display score represents actual commitment rating while active
       }
@@ -303,7 +343,8 @@ const postureSlice = createSlice({
         return;
       }
 
-      const angle = state.angle;
+      const angle = Math.max(0, Math.min(90, Math.round(state.angle || 90)));
+      state.angle = angle;
       const t = state.thresholds;
 
       // 1. Advance total session duration
@@ -370,14 +411,18 @@ const postureSlice = createSlice({
       state.thresholds = { ...state.thresholds, ...action.payload };
     },
     recalibrateBaseline: (state, action: PayloadAction<number>) => {
-      state.baselineAngle = Math.round(action.payload);
+      const rawVal = Number(action.payload);
+      const rounded = Math.round(isNaN(rawVal) ? 90 : rawVal);
+      state.baselineAngle = Math.max(0, Math.min(90, rounded));
     },
     setIsSimulating: (state, action: PayloadAction<boolean>) => {
       state.isSimulating = action.payload;
     },
     setPostureHistory: (state, action: PayloadAction<number[]>) => {
       if (state.isRecordingSession) {
-        state.history = action.payload.map(Math.round).slice(0, 50);
+        state.history = action.payload
+          .map(a => Math.max(0, Math.min(90, Math.round(Number(a) || 0))))
+          .slice(0, 50);
       }
     },
     setIsRecordingSession: (state, action: PayloadAction<boolean>) => {
@@ -464,6 +509,26 @@ const postureSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    // Sanitize any floating-point posture angles from rehydrated persistence
+    builder.addMatcher(
+      (action: any) => action.type === 'persist/REHYDRATE',
+      (state, action: any) => {
+        if (action.payload?.posture) {
+          if (typeof action.payload.posture.angle === 'number') {
+            state.angle = Math.round(action.payload.posture.angle);
+          }
+          if (typeof action.payload.posture.baselineAngle === 'number') {
+            state.baselineAngle = Math.round(action.payload.posture.baselineAngle);
+          }
+          if (Array.isArray(action.payload.posture.history)) {
+            state.history = action.payload.posture.history.map((a: number) => Math.round(a));
+          }
+          if (typeof action.payload.posture.score === 'number' && !state.isRecordingSession) {
+            state.score = calculateLiveAlignmentScore(state.angle, state.baselineAngle, state.thresholds);
+          }
+        }
+      }
+    );
     // If physical device connection drops while actively recording and not in simulation mode, pause recording
     builder.addMatcher(
       (action) => action.type === 'device/setDeviceStatus',
@@ -531,6 +596,136 @@ const deviceSlice = createSlice({
       state.lastConnected = null;
       state.skippedSetup = false;
     }
+  }
+});
+
+// Vitals Slice (Live Biometrics: Heart Rate & SpO2)
+export interface VitalsReadingPoint {
+  heartRate: number;
+  spo2: number;
+  timestamp: string;
+  postureAngle?: number;
+}
+
+export interface VitalsDailyStats {
+  minHr: number;
+  maxHr: number;
+  avgHr: number;
+  minSpo2: number;
+  maxSpo2: number;
+  avgSpo2: number;
+  totalReadings: number;
+}
+
+export interface VitalsState {
+  heartRate: number; // e.g. 72 BPM
+  spo2: number; // e.g. 98%
+  status: 'live' | 'offline' | 'syncing';
+  lastUpdated: string | null;
+  history: VitalsReadingPoint[];
+  dailyStats: VitalsDailyStats;
+  hrv: number; // Root Mean Square / variability estimate in ms
+  serverSynced: boolean;
+}
+
+const vitalsSlice = createSlice({
+  name: 'vitals',
+  initialState: {
+    heartRate: 72,
+    spo2: 98,
+    status: 'offline',
+    lastUpdated: null,
+    history: [],
+    dailyStats: {
+      minHr: 65,
+      maxHr: 88,
+      avgHr: 72,
+      minSpo2: 97,
+      maxSpo2: 99,
+      avgSpo2: 98,
+      totalReadings: 0,
+    },
+    hrv: 48,
+    serverSynced: true,
+  } as VitalsState,
+  reducers: {
+    updateVitals: (state, action: PayloadAction<Partial<VitalsState> & { postureAngle?: number }>) => {
+      const hr = action.payload.heartRate !== undefined ? action.payload.heartRate : state.heartRate;
+      const o2 = action.payload.spo2 !== undefined ? action.payload.spo2 : state.spo2;
+
+      if (action.payload.heartRate !== undefined) state.heartRate = hr;
+      if (action.payload.spo2 !== undefined) state.spo2 = o2;
+      if (action.payload.status !== undefined) state.status = action.payload.status;
+
+      const nowIso = new Date().toISOString();
+      state.lastUpdated = nowIso;
+      state.serverSynced = false;
+
+      // Add to rolling history buffer (keep last 30 readings for instant responsive charts)
+      if (!state.history) state.history = [];
+      state.history.push({
+        heartRate: hr,
+        spo2: o2,
+        timestamp: nowIso,
+        postureAngle: action.payload.postureAngle,
+      });
+      if (state.history.length > 30) {
+        state.history.shift();
+      }
+
+      // Update rolling daily metrics
+      const stats = state.dailyStats || {
+        minHr: hr,
+        maxHr: hr,
+        avgHr: hr,
+        minSpo2: o2,
+        maxSpo2: o2,
+        avgSpo2: o2,
+        totalReadings: 0,
+      };
+
+      stats.minHr = Math.min(stats.minHr, hr);
+      stats.maxHr = Math.max(stats.maxHr, hr);
+      stats.minSpo2 = Math.min(stats.minSpo2, o2);
+      stats.maxSpo2 = Math.max(stats.maxSpo2, o2);
+      stats.totalReadings += 1;
+      stats.avgHr = Math.round(((stats.avgHr * (stats.totalReadings - 1)) + hr) / stats.totalReadings);
+      stats.avgSpo2 = Math.round(((stats.avgSpo2 * (stats.totalReadings - 1)) + o2) / stats.totalReadings);
+      state.dailyStats = stats;
+
+      // Simple real-time HRV estimate based on recent consecutive beats
+      if (state.history.length >= 4) {
+        let diffSum = 0;
+        for (let i = 1; i < state.history.length; i++) {
+          const diff = (60000 / state.history[i].heartRate) - (60000 / state.history[i - 1].heartRate);
+          diffSum += diff * diff;
+        }
+        state.hrv = Math.round(Math.sqrt(diffSum / (state.history.length - 1)));
+      }
+    },
+    setVitalsStatus: (state, action: PayloadAction<'live' | 'offline' | 'syncing'>) => {
+      state.status = action.payload;
+    },
+    setServerSynced: (state, action: PayloadAction<boolean>) => {
+      state.serverSynced = action.payload;
+    },
+    clearVitalsHistory: (state) => {
+      state.history = [];
+    },
+  },
+  extraReducers: (builder) => {
+    builder.addMatcher(
+      (action) => action.type === 'device/setDeviceStatus',
+      (state, action: PayloadAction<boolean>) => {
+        state.status = action.payload ? 'live' : 'offline';
+      }
+    );
+    builder.addMatcher(
+      (action) => action.type === 'device/unpairDevice',
+      (state) => {
+        state.status = 'offline';
+      }
+    );
   }
 });
 
@@ -824,12 +1019,14 @@ export const { updateAngle, tickSessionStats, resetSessionStats, setThresholds, 
 export const { setDeviceStatus, setHasPaired, setSkippedSetup, updateBattery, unpairDevice } = deviceSlice.actions;
 export const { addAppointment, removeAppointment, updateAppointment, setAppointmentStatus, rescheduleAppointment, cancelAppointment, approveAppointment, payAdvanceFee, addChatMessage, shareReportWithDoctor } = appointmentsSlice.actions;
 export const { setOnlineStatus, addToSyncQueue, removeFromSyncQueue, clearSyncQueue } = syncSlice.actions;
+export const { updateVitals, setVitalsStatus, setServerSynced, clearVitalsHistory } = vitalsSlice.actions;
 
 const appReducer = combineReducers({
   auth: authSlice.reducer,
   ui: uiSlice.reducer,
   posture: postureSlice.reducer,
   device: deviceSlice.reducer,
+  vitals: vitalsSlice.reducer,
   appointments: appointmentsSlice.reducer,
   sync: syncSlice.reducer,
 });
@@ -845,7 +1042,7 @@ const persistConfig = {
   key: 'root',
   version: 1,
   storage,
-  whitelist: ['auth', 'ui', 'posture', 'appointments', 'sync', 'device'], // Persist these including auth state
+  whitelist: ['auth', 'ui', 'posture', 'appointments', 'sync', 'device', 'vitals'], // Persist these including auth state
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);

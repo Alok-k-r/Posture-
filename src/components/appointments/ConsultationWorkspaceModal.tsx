@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { X, Send, Share2, Calendar, Sparkles, MessageSquare, Stethoscope, Activity, FileText, CheckCircle2, AlertCircle, RefreshCw, Layers } from 'lucide-react';
 import { Appointment, RootState, addChatMessage, shareReportWithDoctor } from '../../store/store';
 import { Spine3DModel } from '../spine/Spine3DModel';
+import { InverseDynamicsEngine } from '../../services/biomechanicsEngine';
 
 interface ConsultationWorkspaceModalProps {
   isOpen: boolean;
@@ -115,7 +116,7 @@ export const ConsultationWorkspaceModal: React.FC<ConsultationWorkspaceModalProp
         score: scoreVal,
         incidents: incidentsVal,
         stabilityScore: posture.stabilityScore || 88,
-        cervicalTorque: Math.round((90 - angleVal) * 0.65 + 12),
+        cervicalTorque: InverseDynamicsEngine.calculateMoments(angleVal, 90).cervicalTorqueNm,
       }
     }));
   };
@@ -243,7 +244,7 @@ export const ConsultationWorkspaceModal: React.FC<ConsultationWorkspaceModalProp
                             <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
                               <div className="p-1.5 bg-slate-800 rounded-lg">
                                 <span className="text-slate-400 block">Avg Angle</span>
-                                <span className="font-extrabold text-emerald-400 text-xs">{msg.reportAttachment.avgAngle}°</span>
+                                <span className="font-extrabold text-emerald-400 text-xs">{Math.round(msg.reportAttachment.avgAngle)}°</span>
                               </div>
                               <div className="p-1.5 bg-slate-800 rounded-lg">
                                 <span className="text-slate-400 block">Integrity</span>
@@ -347,7 +348,7 @@ export const ConsultationWorkspaceModal: React.FC<ConsultationWorkspaceModalProp
                       <div className="grid grid-cols-2 gap-2.5">
                         <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
                           <span className="text-[10px] text-slate-400 block font-bold">Cervical Flexion (CTA)</span>
-                          <span className="text-lg font-black text-emerald-400">{activeReport.avgAngle}°</span>
+                          <span className="text-lg font-black text-emerald-400">{Math.round(activeReport.avgAngle)}°</span>
                           <span className="text-[9px] text-slate-500 block">Normal range: 85° - 90°</span>
                         </div>
 
@@ -381,11 +382,11 @@ export const ConsultationWorkspaceModal: React.FC<ConsultationWorkspaceModalProp
                       <div className="space-y-1.5 text-xs text-slate-300 font-medium">
                         <div className="flex justify-between p-2 bg-slate-950/60 rounded-lg">
                           <span className="text-slate-400">Calibration Baseline:</span>
-                          <span className="font-extrabold text-white">{posture.baselineAngle}°</span>
+                          <span className="font-extrabold text-white">{Math.round(posture.baselineAngle)}°</span>
                         </div>
                         <div className="flex justify-between p-2 bg-slate-950/60 rounded-lg">
                           <span className="text-slate-400">Slouch Alert Threshold:</span>
-                          <span className="font-extrabold text-amber-400">{posture.thresholds.warn}° Warn / {posture.thresholds.good}° Good</span>
+                          <span className="font-extrabold text-amber-400">{Math.round(posture.thresholds.warn)}° Warn / {Math.round(posture.thresholds.good)}° Good</span>
                         </div>
                         <div className="flex justify-between p-2 bg-slate-950/60 rounded-lg">
                           <span className="text-slate-400">Streak Progress:</span>
