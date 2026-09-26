@@ -17,6 +17,7 @@ import {
   onAuthStateChanged
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
+import toast from 'react-hot-toast';
 
 const getAvatarUrl = (name: string, selectedGender: string) => {
   const seed = `${selectedGender || 'other'}-${encodeURIComponent((name || 'User').trim())}`;
@@ -55,7 +56,11 @@ export const LoginScreen: React.FC = () => {
 
   // Set isInIframe on mount
   useEffect(() => {
-    setIsInIframe(window.self !== window.top);
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch {
+      setIsInIframe(true);
+    }
   }, []);
 
   // Listen to Auth State changes and process redirect results
@@ -624,7 +629,7 @@ export const LoginScreen: React.FC = () => {
       const user = auth.currentUser;
       if (user) {
         await sendEmailVerification(user);
-        alert('Verification email has been resent to ' + user.email + '. Please check your inbox.');
+        toast.success('Verification email has been resent to ' + user.email + '. Please check your inbox.');
       } else {
         setErrorMsg('Session expired. Please log in again.');
         setView('login');

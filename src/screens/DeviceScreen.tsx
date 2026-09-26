@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { auth } from '../lib/firebase';
 import { bluetoothService } from '../services/bluetoothService';
+import toast from 'react-hot-toast';
 
 export const DeviceScreen: React.FC = () => {
   const dispatch = useDispatch();
@@ -24,8 +25,9 @@ export const DeviceScreen: React.FC = () => {
       const success = await bluetoothService.connect();
       if (success) {
         dispatch(setDeviceStatus(true));
+        toast.success("BLE pod connected successfully!");
       } else {
-        alert("Could not establish BLE GATT connection. Make sure your pod's Bluetooth is active.");
+        toast.error("Could not establish BLE GATT connection. Make sure your pod's Bluetooth is active.");
       }
     } catch (err: any) {
       const errMsg = String(err.message || err);
@@ -34,7 +36,7 @@ export const DeviceScreen: React.FC = () => {
         console.warn('Bluetooth connection disallowed by permissions policy inside iframe.');
       } else {
         console.error(err);
-        alert(`Bluetooth link failed: ${err.message || err}`);
+        toast.error(`Bluetooth link failed: ${err.message || err}`);
       }
     } finally {
       setIsConnectingBle(false);
@@ -186,7 +188,7 @@ export const DeviceScreen: React.FC = () => {
           </div>
           <div className="flex justify-between">
             <span className="text-slate-500 text-[9px]">📐 Spine Slouch Angle:</span>
-            <span className="text-emerald-300 font-bold">{angle}°</span>
+            <span className="text-emerald-300 font-bold">{Math.round(angle)}°</span>
           </div>
           <div className="flex justify-between">
             <span className="text-slate-500 text-[9px]">🔄 Telemetry Updates:</span>
@@ -194,7 +196,7 @@ export const DeviceScreen: React.FC = () => {
           </div>
           <div className="flex justify-between">
             <span className="text-slate-500 text-[9px]">📊 Baseline Calibrated:</span>
-            <span className="text-emerald-400">{baselineAngle}°</span>
+            <span className="text-emerald-400">{Math.round(baselineAngle)}°</span>
           </div>
           <div className="flex justify-between">
             <span className="text-slate-500 text-[9px]">🔋 PosturePal Pod Battery:</span>

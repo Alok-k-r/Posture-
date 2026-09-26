@@ -12,6 +12,14 @@
  */
 
 import { IndexedDbService, PersonalModelMetadata } from "./indexedDbService";
+import { 
+  HansrajSpinalLoadModel, 
+  InverseDynamicsEngine, 
+  ImuTelemetryFilter, 
+  HansrajLoadResult, 
+  InverseDynamicsResult, 
+  FilterState 
+} from "./biomechanicsEngine";
 
 export interface PostureTimeOfDayPatterns {
   morningSlouches: number;   // 8 AM - 12 PM
@@ -161,6 +169,22 @@ export interface LocalBiomechanicalMetrics {
   sensorDriftEstimatePercent: number; // estimate of raw sensor drift
   evidenceChain: EvidenceChainItem[];
   modelMetadata: PersonalModelMetadata;
+
+  // --- TIER 1: KENNETH HANSRAJ & SUBJECT INVERSE DYNAMICS FIELDS ---
+  cervicalSpineLoadHansrajLbs: number;    // Kenneth Hansraj Cervical Spinal-Load Model (lbs)
+  cervicalSpineLoadHansrajKg: number;     // Kenneth Hansraj Cervical Spinal-Load Model (kg)
+  cervicalTorqueNm: number;               // Subject-specific inverse dynamics net cervical moment (N·m)
+  cervicalCompressiveForceN: number;      // Total cervical compressive joint reaction force at C7/T1 (N)
+  neckExtensorForceN: number;             // Neck extensor muscle tensile force (N)
+  headCenterOfMassOffsetCm: number;       // Horizontal lever arm from C7 to Head CoM (cm)
+  cervicalStressZone: string;             // Hansraj clinical zone classification
+
+  // --- TIER 2: FILTERED IMU TELEMETRY FIELDS ---
+  filteredAngle: number;                  // Drift-free Complementary / Madgwick filtered orientation
+  rawTelemetryAngle: number;              // Raw sensor angle before filter stage
+  angularVelocityDegPerSec: number;       // Live head rotational velocity (deg/s)
+  filterNoiseVariance: number;            // Quantization/tremor noise variance
+  transientArtifactsSuppressed: number;   // Counter of impulse shock spikes rejected
 }
 
 export interface HistoricalSessionSummary {
@@ -291,24 +315,20 @@ export class LocalModelService {
 
   /**
    * Layer 2: Biomechanical Physics Strain estimation.
-   * Calculates mechanical lever arm forces acting on paraspinals, rhomboids,
-   * and middle trapezius.
+   * Integrates Kenneth K. Hansraj Cervical Spinal-Load Model (2014) with
+   * subject-specific inverse dynamics lever arm mechanics.
    */
   public static calculateUpperBackStrain(angle: number, baselineAngle: number = 90, height?: number, weight?: number): number {
-    const deviation = Math.max(0, Math.abs(baselineAngle - angle));
-    if (deviation <= 2) return 10; // Normal muscular baseline hold at perfect verticality
-    
-    // Orthopedic mechanical curve (lever arm equation)
-    let tension = 10 + (1.15 * deviation) - (0.004 * deviation * deviation);
-    
-    // Weight-bearing paraspinal adjustment
-    if (weight && weight > 0) {
-      const weightFactor = 1 + ((weight - 70) / 70) * 0.6;
-      tension *= weightFactor;
-    }
-    // Vertical spinal column scale (taller height increases paraspinal leverage strain)
+    const safeAngle = isNaN(angle) ? baselineAngle : angle;
+    const safeBaseline = isNaN(baselineAngle) ? 90 : baselineAngle;
+
+    // Hansraj clinical cervical spine load
+    const hansraj = HansrajSpinalLoadModel.calculateLoad(safeAngle, safeBaseline, weight);
+    let tension = hansraj.cervicalLoadLbs;
+
+    // Subject-specific inverse dynamics height leverage adjustment (taller stature increases paraspinal moment arm)
     if (height && height > 0) {
-      const heightFactor = 1 + ((height - 170) / 170) * 0.5;
+      const heightFactor = 1 + ((height - 170) / 170) * 0.25;
       tension *= heightFactor;
     }
 
@@ -613,9 +633,18 @@ export class LocalModelService {
       }
 
       // ==========================================
-      // LAYER 2: BIOMECHANICAL PHYSICS
+      // LAYER 1: TIER 2 ADAPTIVE IMU TELEMETRY FILTERING
       // ==========================================
-      const activeStrain = this.calculateUpperBackStrain(safeAngle, safeBaseline, height, weight);
+      const filteredAngle = ImuTelemetryFilter.processSample(safeAngle);
+      const imuFilterState = ImuTelemetryFilter.getState();
+
+      // ==========================================
+      // LAYER 2: TIER 1 BIOMECHANICAL PHYSICS (Hansraj & Inverse Dynamics)
+      // ==========================================
+      const hansrajLoad = HansrajSpinalLoadModel.calculateLoad(filteredAngle, safeBaseline, weight);
+      const inverseDynamics = InverseDynamicsEngine.calculateMoments(filteredAngle, safeBaseline, height, weight);
+
+      const activeStrain = this.calculateUpperBackStrain(filteredAngle, safeBaseline, height, weight);
       
       // Continuously active strain hours (unbroken high paraspinal stress)
       let stressSeconds = 0;
@@ -817,16 +846,16 @@ export class LocalModelService {
       // 2. Evidence Chain & Feature Importance Tracking
       const evidenceChain: EvidenceChainItem[] = [
         {
-          factor: "Skeletal Pivot Tilt",
-          evidence: `Deviation is currently ${dev.toFixed(0)}° from calibrated baseline (${safeBaseline}°)`,
+          factor: "Hansraj Cervical Spinal Loading",
+          evidence: `Hansraj load: ${hansrajLoad.cervicalLoadLbs} lbs (${hansrajLoad.cervicalLoadKg} kg) [${hansrajLoad.biomechanicalZone}] at ${hansrajLoad.flexionDegrees}° flexion`,
           importance: "35%",
-          significance: dev > 15 ? "Critical" : dev > 5 ? "Moderate" : "Optimal"
+          significance: hansrajLoad.cervicalLoadLbs > 40 ? "Critical" : hansrajLoad.cervicalLoadLbs > 20 ? "Moderate" : "Optimal"
         },
         {
-          factor: "Spinal Force Load",
-          evidence: `Estimated static force load holds at ${activeStrain} lbs`,
+          factor: "Inverse Dynamics Cervical Torque",
+          evidence: `C7/T1 moment: ${inverseDynamics.cervicalTorqueNm} N·m (Moment arm: ${inverseDynamics.leverArmCm} cm, Extensor force: ${inverseDynamics.cervicalExtensorForceN} N, Joint Compression: ${inverseDynamics.compressiveJointForceKg} kg)`,
           importance: "25%",
-          significance: activeStrain > 35 ? "Critical" : activeStrain > 20 ? "Moderate" : "Optimal"
+          significance: inverseDynamics.cervicalTorqueNm > 5.0 ? "Critical" : inverseDynamics.cervicalTorqueNm > 2.0 ? "Moderate" : "Optimal"
         },
         {
           factor: "Lactic Fatigue Growth",
@@ -1136,7 +1165,23 @@ export class LocalModelService {
         confidenceInterval,
         sensorDriftEstimatePercent,
         evidenceChain,
-        modelMetadata: model
+        modelMetadata: model,
+
+        // --- TIER 1: HANSRAJ & INVERSE DYNAMICS ---
+        cervicalSpineLoadHansrajLbs: hansrajLoad.cervicalLoadLbs,
+        cervicalSpineLoadHansrajKg: hansrajLoad.cervicalLoadKg,
+        cervicalTorqueNm: inverseDynamics.cervicalTorqueNm,
+        cervicalCompressiveForceN: inverseDynamics.compressiveJointForceN,
+        neckExtensorForceN: inverseDynamics.cervicalExtensorForceN,
+        headCenterOfMassOffsetCm: inverseDynamics.leverArmCm,
+        cervicalStressZone: hansrajLoad.biomechanicalZone,
+
+        // --- TIER 2: FILTERED IMU TELEMETRY ---
+        filteredAngle: imuFilterState.filteredAngle,
+        rawTelemetryAngle: imuFilterState.rawAngle,
+        angularVelocityDegPerSec: imuFilterState.angularVelocityDegPerSec,
+        filterNoiseVariance: imuFilterState.noiseVariance,
+        transientArtifactsSuppressed: imuFilterState.rejectionCount
       };
 
       // Write-through to localStorage cache so UI gets immediate access
@@ -1306,7 +1351,23 @@ export class LocalModelService {
         confidenceInterval: "± 1.2%",
         sensorDriftEstimatePercent: 0.1,
         evidenceChain: [],
-        modelMetadata: model
+        modelMetadata: model,
+
+        // --- TIER 1: HANSRAJ & INVERSE DYNAMICS DEFAULTS ---
+        cervicalSpineLoadHansrajLbs: 12.0,
+        cervicalSpineLoadHansrajKg: 5.4,
+        cervicalTorqueNm: 0.0,
+        cervicalCompressiveForceN: 49.0,
+        neckExtensorForceN: 0.0,
+        headCenterOfMassOffsetCm: 0.0,
+        cervicalStressZone: "Neutral",
+
+        // --- TIER 2: FILTERED IMU TELEMETRY DEFAULTS ---
+        filteredAngle: 90.0,
+        rawTelemetryAngle: 90.0,
+        angularVelocityDegPerSec: 0.0,
+        filterNoiseVariance: 0.04,
+        transientArtifactsSuppressed: 0
       };
     } else {
       return {
@@ -1419,7 +1480,23 @@ export class LocalModelService {
         confidenceInterval: "± 0%",
         sensorDriftEstimatePercent: 0,
         evidenceChain: [],
-        modelMetadata: model
+        modelMetadata: model,
+
+        // --- TIER 1: HANSRAJ & INVERSE DYNAMICS DEFAULTS ---
+        cervicalSpineLoadHansrajLbs: 0.0,
+        cervicalSpineLoadHansrajKg: 0.0,
+        cervicalTorqueNm: 0.0,
+        cervicalCompressiveForceN: 0.0,
+        neckExtensorForceN: 0.0,
+        headCenterOfMassOffsetCm: 0.0,
+        cervicalStressZone: "Neutral",
+
+        // --- TIER 2: FILTERED IMU TELEMETRY DEFAULTS ---
+        filteredAngle: 90.0,
+        rawTelemetryAngle: 90.0,
+        angularVelocityDegPerSec: 0.0,
+        filterNoiseVariance: 0.0,
+        transientArtifactsSuppressed: 0
       };
     }
   }
@@ -1446,6 +1523,13 @@ export class LocalModelService {
   - Real-time: ${m.upperBackStrainLbs} lbs | Peak: ${m.peakThoracicLoadLbs} lbs | Avg: ${m.averageThoracicLoadLbs} lbs
   - Classification: ${m.loadClassification} | Continuous Load Tension: ${m.continuousStressMinutes} minutes
   - Cumulative Daily Load: ${m.cumulativeDailyLoadKgh} lb-hours
+* Kenneth Hansraj Cervical Spinal-Load & Inverse Dynamics (Tier 1):
+  - Hansraj Cervical Load: ${m.cervicalSpineLoadHansrajLbs} lbs (${m.cervicalSpineLoadHansrajKg} kg) [Zone: ${m.cervicalStressZone}]
+  - C7/T1 Moment: ${m.cervicalTorqueNm} N·m (Extensor Muscle Force: ${m.neckExtensorForceN} N, Disc Compression: ${m.cervicalCompressiveForceN} N)
+  - Head Center-of-Mass Lever Offset: ${m.headCenterOfMassOffsetCm} cm
+* IMU Telemetry Ingestion (Tier 2 Adaptive Filter):
+  - Drift-Free Filtered Angle: ${Math.round(m.filteredAngle)}° (Raw Sensor: ${Math.round(m.rawTelemetryAngle)}°, Noise Variance: ${m.filterNoiseVariance})
+  - Head Rotational Velocity: ${m.angularVelocityDegPerSec}°/s | Transient Shocks Suppressed: ${m.transientArtifactsSuppressed}
 * Muscle Fatigue Analysis:
   - Current Fatigue: ${m.fatigueScore}% (Slope Rate: ${m.fatigueGrowthRate}%/min, Speed: ${m.fatigueStability})
   - Trend: ${m.fatigueTrend} | 30m Prediction: ${m.predictedFatigue30m}% | 60m Prediction: ${m.predictedFatigue60m}%
@@ -1497,7 +1581,9 @@ ${evidenceChainStr}
    */
   public static generateLocalBiomechanicalInsight(currentAngle: number, baselineAngle: number): string {
     const m = this.getMetrics();
-    const diff = Math.max(0, Math.abs(baselineAngle - currentAngle));
+    const safeCurrent = Math.round(currentAngle);
+    const safeBaseline = Math.round(baselineAngle);
+    const diff = Math.round(Math.max(0, Math.abs(safeBaseline - safeCurrent)));
     const risk = m.injuryRisk;
     const dp = m.digitalProfile;
 

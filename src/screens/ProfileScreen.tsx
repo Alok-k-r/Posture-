@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, logout, updateUser, addToSyncQueue } from '../store/store';
-import { User, LogOut, Shield, Settings, ChevronRight, Camera, Trophy, Star, Activity, Heart, XCircle, Check, Edit2, Ruler, Scale, Calendar } from 'lucide-react';
+import { User, LogOut, Shield, Settings, ChevronRight, Camera, Trophy, Star, Activity, Heart, XCircle, Check, Edit2, Ruler, Scale, Calendar, Upload, ImageIcon, Sparkles } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { useNavigate } from 'react-router-dom';
@@ -11,6 +11,49 @@ import { signOut, deleteUser } from 'firebase/auth';
 import { doc, deleteDoc, collection, getDocs } from 'firebase/firestore';
 import { ref as rtdbRef, remove as rtdbRemove } from 'firebase/database';
 import { LocalModelService } from '../services/localModelService';
+import { SessionService, UnifiedSession } from '../services/sessionService';
+import toast from 'react-hot-toast';
+
+// Helper to downscale and optimize user-uploaded gallery images
+const compressImage = (file: File, maxSize = 512): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxSize) {
+            height = Math.round((height * maxSize) / width);
+            width = maxSize;
+          }
+        } else {
+          if (height > maxSize) {
+            width = Math.round((width * maxSize) / height);
+            height = maxSize;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(e.target?.result as string);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        resolve(dataUrl);
+      };
+      img.onerror = () => reject(new Error('Failed to parse image file'));
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+};
 
 const AVATAR_OPTIONS = [
   // Original restored classics
@@ -59,62 +102,115 @@ export const ProfileScreen: React.FC = () => {
   const score = posture.score;
   const angle = posture.angle;
 
-  // Real dynamic calculations based on saved clinical telemetry and active state
-  const historicalSessions = LocalModelService.getHistoricalSessions();
+  const [sessions, setSessions] = useState<UnifiedSession[]>([]);
 
-  // 1. Posture Rating
-  const avgSessionScore = historicalSessions.length > 0
-    ? historicalSessions.reduce((acc, s) => acc + s.qualityScore, 0) / historicalSessions.length
-    : 80;
-  // Combine historical averages with current session's integrity score if active
-  const combinedPostureScore = posture.isRecordingSession && posture.totalSessionSeconds > 10
-    ? (avgSessionScore * 0.4 + posture.integrityScore * 0.6)
-    : avgSessionScore;
+  // Subscribe to real-time session database updates across Firestore and LocalStorage
+  useEffect(() => {
+    const userId = user?.id || auth.currentUser?.uid || 'guest';
+    const unsubscribe = SessionService.subscribeToSessions(userId, (fetched) => {
+      setSessions(fetched);
+    });
+    return () => unsubscribe();
+  }, [user?.id, auth.currentUser?.uid]);
 
-  let postureRating = 'Elite';
-  if (combinedPostureScore >= 85) postureRating = 'Elite';
-  else if (combinedPostureScore >= 70) postureRating = 'Striving';
-  else if (combinedPostureScore >= 55) postureRating = 'Fair';
-  else postureRating = 'Critical';
+  // Aggregate Today's Completed Sessions + Live Active Session
+  const todayStr = new Date().toDateString();
+  const todayCompletedSessions = sessions.filter(s => {
+    if (!s.date) return false;
+    return new Date(s.date).toDateString() === todayStr;
+  });
 
-  // 2. Session Time
-  // Sum up all seconds logged across today's sessions + active session
-  const activeSeconds = posture.totalSessionSeconds || 0;
-  const histSeconds = historicalSessions.reduce((acc, s) => acc + s.durationSeconds, 0);
-  const totalSecondsToday = activeSeconds + histSeconds;
+  const activeDuration = posture.isRecordingSession ? posture.totalSessionSeconds || 0 : 0;
+  const activeIncidents = posture.isRecordingSession ? posture.incidents || 0 : 0;
 
-  let sessionTimeDisplay = '4.2h Today';
-  if (totalSecondsToday < 60) {
-    sessionTimeDisplay = `${totalSecondsToday}s Today`;
-  } else if (totalSecondsToday < 3600) {
-    sessionTimeDisplay = `${Math.round(totalSecondsToday / 60)}m Today`;
+  const completedTodayTotalSecs = todayCompletedSessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+  const completedTodayIncidents = todayCompletedSessions.reduce((acc, s) => acc + (s.slouches || 0), 0);
+
+  const combinedTodayTotalSecs = completedTodayTotalSecs + activeDuration;
+  const totalTodayIncidents = completedTodayIncidents + activeIncidents;
+
+  // All-time session aggregations as fallback
+  const allTimeCompletedSecs = sessions.reduce((acc, s) => acc + (s.duration || 0), 0);
+  const allTimeIncidents = sessions.reduce((acc, s) => acc + (s.slouches || 0), 0);
+  const totalAllTimeSecs = allTimeCompletedSecs + activeDuration;
+  const totalAllTimeIncidents = allTimeIncidents + activeIncidents;
+
+  // 1. Session Time (Real time tracked today)
+  let sessionTimeDisplay = '0m Today';
+  if (combinedTodayTotalSecs > 0) {
+    if (combinedTodayTotalSecs < 60) {
+      sessionTimeDisplay = `${combinedTodayTotalSecs}s Today`;
+    } else if (combinedTodayTotalSecs < 3600) {
+      sessionTimeDisplay = `${Math.floor(combinedTodayTotalSecs / 60)}m Today`;
+    } else {
+      sessionTimeDisplay = `${(combinedTodayTotalSecs / 3600).toFixed(1)}h Today`;
+    }
   } else {
-    sessionTimeDisplay = `${(totalSecondsToday / 3600).toFixed(1)}h Today`;
+    sessionTimeDisplay = '0m Today';
   }
 
-  // 3. Alert Rate
-  // Number of alerts per hour of sitting
-  const activeIncidents = posture.incidents || 0;
-  // Estimate historical incidents based on historical sessions (typically 2-3 per session)
-  const histIncidents = historicalSessions.reduce((acc, s) => acc + (s.complianceRate < 80 ? 5 : s.complianceRate < 90 ? 3 : 1), 0);
-  const totalIncidentsCombined = activeIncidents + histIncidents;
-  const totalHoursCombined = totalSecondsToday / 3600;
+  // 2. Alert Rate (Real slouch incidents per hour)
+  let alertRateDisplay = '0 / Hr';
+  if (combinedTodayTotalSecs >= 60) {
+    const hours = combinedTodayTotalSecs / 3600;
+    const rate = Math.round((totalTodayIncidents / hours) * 10) / 10;
+    alertRateDisplay = `${rate} / Hr`;
+  } else if (totalAllTimeSecs >= 60) {
+    const hours = totalAllTimeSecs / 3600;
+    const rate = Math.round((totalAllTimeIncidents / hours) * 10) / 10;
+    alertRateDisplay = `${rate} / Hr`;
+  } else {
+    alertRateDisplay = '0 / Hr';
+  }
 
-  const calculatedAlertRate = totalHoursCombined > 0.05
-    ? Math.round((totalIncidentsCombined / totalHoursCombined) * 10) / 10
-    : 1.8; // Default to healthy baseline if no long sessions exist
-  const alertRateDisplay = `${calculatedAlertRate} / Hr`;
+  // 3. Integrity Score (Real alignment score percentage)
+  let calculatedIntegrity: number | null = null;
+  if (posture.isRecordingSession) {
+    calculatedIntegrity = posture.integrityScore;
+  } else if (todayCompletedSessions.length > 0 && completedTodayTotalSecs > 0) {
+    const weightedSum = todayCompletedSessions.reduce((acc, s) => acc + ((s.score || 0) * (s.duration || 0)), 0);
+    calculatedIntegrity = Math.round(weightedSum / completedTodayTotalSecs);
+  } else if (sessions.length > 0) {
+    const sum = sessions.reduce((acc, s) => acc + (s.score || 0), 0);
+    calculatedIntegrity = Math.round(sum / sessions.length);
+  }
 
-  // 4. Integrity
-  // True integrity score: current session integrity score if recording, or historical average quality score if standby
-  const calculatedIntegrity = posture.isRecordingSession
-    ? posture.integrityScore
-    : Math.round(avgSessionScore);
+  // 4. Posture Rating
+  let postureRating = '--';
+  let ratingColor = 'text-slate-400';
+  let ratingBg = 'bg-slate-50';
+
+  if (calculatedIntegrity !== null) {
+    if (calculatedIntegrity >= 85) {
+      postureRating = 'Elite';
+      ratingColor = 'text-amber-500';
+      ratingBg = 'bg-amber-50';
+    } else if (calculatedIntegrity >= 70) {
+      postureRating = 'Good';
+      ratingColor = 'text-indigo-500';
+      ratingBg = 'bg-indigo-50';
+    } else if (calculatedIntegrity >= 55) {
+      postureRating = 'Fair';
+      ratingColor = 'text-orange-500';
+      ratingBg = 'bg-orange-50';
+    } else {
+      postureRating = 'Needs Work';
+      ratingColor = 'text-rose-500';
+      ratingBg = 'bg-rose-50';
+    }
+  }
   
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(user?.name || '');
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const navigate = useNavigate();
+
+  const userId = user?.id || auth.currentUser?.uid || 'guest';
+  const savedCustomPhoto = typeof window !== 'undefined' ? localStorage.getItem(`user_custom_photo_${userId}`) : null;
+  const isCurrentPhotoCustom = Boolean(user?.photo && !AVATAR_OPTIONS.includes(user.photo));
+  const customPhoto = isCurrentPhotoCustom ? user?.photo : savedCustomPhoto;
 
   const [isEditingBiometrics, setIsEditingBiometrics] = useState(false);
   const [age, setAge] = useState(user?.age ? String(user.age) : '');
@@ -234,13 +330,13 @@ export const ProfileScreen: React.FC = () => {
 
       dispatch(logout());
       navigate('/login');
-      alert("Your account and all associated database records have been successfully deleted.");
+      toast.success("Your account and all associated database records have been successfully deleted.");
     } catch (error: any) {
       console.error('Error during account deletion:', error);
       if (error?.code === 'auth/requires-recent-login') {
-        alert("For security reasons, deleting your account requires a recent login. Please sign out and sign in again before attempting deletion.");
+        toast.error("For security reasons, deleting your account requires a recent login. Please sign out and sign in again before attempting deletion.");
       } else {
-        alert(`An error occurred while deleting your account: ${error?.message || error}`);
+        toast.error(`An error occurred while deleting your account: ${error?.message || error}`);
       }
     }
   };
@@ -266,15 +362,15 @@ export const ProfileScreen: React.FC = () => {
     const weightNum = parseFloat(weight);
 
     if (isNaN(ageNum) || ageNum <= 0 || ageNum > 120) {
-      alert('Please enter a valid age (1-120)');
+      toast.error('Please enter a valid age (1-120)');
       return;
     }
     if (isNaN(heightNum) || heightNum <= 30 || heightNum > 300) {
-      alert('Please enter a valid height (30-300 cm)');
+      toast.error('Please enter a valid height (30-300 cm)');
       return;
     }
     if (isNaN(weightNum) || weightNum <= 5 || weightNum > 500) {
-      alert('Please enter a valid weight (5-500 kg)');
+      toast.error('Please enter a valid weight (5-500 kg)');
       return;
     }
 
@@ -298,13 +394,94 @@ export const ProfileScreen: React.FC = () => {
     setTimeout(() => setIsSaved(false), 2000);
   };
 
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please select an image file from your gallery');
+      return;
+    }
+
+    try {
+      setIsUploading(true);
+      const loadingToast = toast.loading('Processing gallery photo...');
+      const optimizedBase64 = await compressImage(file, 512);
+
+      dispatch(updateUser({ photo: optimizedBase64 }));
+      dispatch(addToSyncQueue({
+        id: `profile_photo_${Date.now()}`,
+        type: 'SYNC_USER_PROFILE',
+        payload: { photo: optimizedBase64 },
+        timestamp: new Date().toISOString()
+      }));
+
+      const activeUid = user?.id || auth.currentUser?.uid;
+      if (activeUid) {
+        try {
+          const stored = localStorage.getItem(`user_profile_${activeUid}`);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            parsed.photo = optimizedBase64;
+            localStorage.setItem(`user_profile_${activeUid}`, JSON.stringify(parsed));
+          }
+          localStorage.setItem(`user_custom_photo_${activeUid}`, optimizedBase64);
+        } catch (e) {
+          console.warn('Could not cache custom photo in localStorage:', e);
+        }
+      }
+
+      toast.dismiss(loadingToast);
+      toast.success('Profile picture updated from gallery!');
+      setShowAvatarPicker(false);
+    } catch (err) {
+      console.error('Failed to process image:', err);
+      toast.error('Failed to process image. Please try another photo.');
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   const handleSelectAvatar = (url: string) => {
     dispatch(updateUser({ photo: url }));
+    dispatch(addToSyncQueue({
+      id: `profile_photo_${Date.now()}`,
+      type: 'SYNC_USER_PROFILE',
+      payload: { photo: url },
+      timestamp: new Date().toISOString()
+    }));
+    const activeUid = user?.id || auth.currentUser?.uid;
+    if (activeUid) {
+      try {
+        const stored = localStorage.getItem(`user_profile_${activeUid}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          parsed.photo = url;
+          localStorage.setItem(`user_profile_${activeUid}`, JSON.stringify(parsed));
+        }
+      } catch (e) {
+        console.warn('Could not cache user photo in localStorage:', e);
+      }
+    }
+    toast.success('Avatar updated!');
     setShowAvatarPicker(false);
   };
 
   return (
     <div className="p-6 space-y-8 pb-24 relative z-10">
+      {/* Hidden file input for gallery DP uploads */}
+      <input 
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFileUpload}
+        className="hidden"
+        id="profile-gallery-dp-input"
+      />
+
       {/* Header with Photo */}
       <div className="flex flex-col items-center gap-4 text-center mt-6">
         <div className="relative">
@@ -323,7 +500,8 @@ export const ProfileScreen: React.FC = () => {
               <motion.button 
                 whileHover={{ opacity: 1 }}
                 onClick={() => setShowAvatarPicker(true)}
-                className="absolute inset-0 bg-black/40 opacity-0 flex items-center justify-center transition-opacity"
+                className="absolute inset-0 bg-black/40 opacity-0 flex items-center justify-center transition-opacity cursor-pointer"
+                title="Change Profile Picture"
               >
                 <Camera className="text-white" size={24} />
               </motion.button>
@@ -331,7 +509,8 @@ export const ProfileScreen: React.FC = () => {
           </motion.div>
           <button 
             onClick={() => setShowAvatarPicker(true)}
-            className="absolute -bottom-2 -right-2 w-10 h-10 bg-white rounded-2xl border border-slate-100 shadow-premium flex items-center justify-center text-indigo-500 active:scale-90 transition-all"
+            className="absolute -bottom-2 -right-2 w-10 h-10 bg-white rounded-2xl border border-slate-100 shadow-premium flex items-center justify-center text-indigo-500 hover:text-indigo-600 active:scale-90 transition-all cursor-pointer"
+            title="Change photo or avatar"
           >
             <Camera size={18} />
           </button>
@@ -349,7 +528,7 @@ export const ProfileScreen: React.FC = () => {
               />
               <button 
                 onClick={handleSave}
-                className="w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center shadow-lg active:scale-95"
+                className="w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center shadow-lg active:scale-95 cursor-pointer"
               >
                 <Check size={20} />
               </button>
@@ -359,7 +538,7 @@ export const ProfileScreen: React.FC = () => {
               <h2 className="text-3xl font-extrabold text-slate-800 tracking-tight">{user?.name}</h2>
               <button 
                 onClick={() => setIsEditing(true)}
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400 hover:text-indigo-500"
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400 hover:text-indigo-500 cursor-pointer"
               >
                 <Edit2 size={18} />
               </button>
@@ -368,10 +547,31 @@ export const ProfileScreen: React.FC = () => {
           <p className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-4 py-1.5 rounded-full inline-block mt-2 uppercase tracking-[0.2em]">
             Verified User · {user?.id?.slice(-6).toUpperCase()}
           </p>
+
+          {/* Quick Photo Actions */}
+          <div className="flex items-center justify-center gap-2 pt-2">
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold text-xs shadow-xs active:scale-95 transition-all cursor-pointer border border-indigo-100"
+              title="Upload picture from your gallery"
+            >
+              <Upload size={13} />
+              <span>Upload DP</span>
+            </button>
+            <button 
+              onClick={() => setShowAvatarPicker(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs shadow-xs active:scale-95 transition-all cursor-pointer border border-slate-200"
+              title="Browse avatar options"
+            >
+              <Sparkles size={13} />
+              <span>Avatars</span>
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Avatar Picker Modal */}
+      {/* Avatar & Photo Picker Modal */}
       <AnimatePresence>
         {showAvatarPicker && (
           <>
@@ -388,23 +588,109 @@ export const ProfileScreen: React.FC = () => {
               exit={{ scale: 0.95, opacity: 0, y: 10 }}
               className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[92%] max-w-sm bg-white rounded-[40px] p-6 md:p-8 z-[1000] shadow-2xl max-h-[85vh] flex flex-col"
             >
-              <h3 className="text-xl font-black text-slate-800 mb-4 text-center tracking-tight">Choose Avatar</h3>
+              <div className="text-center mb-4">
+                <h3 className="text-xl font-black text-slate-800 tracking-tight">Profile Picture</h3>
+                <p className="text-xs text-slate-500 font-medium mt-0.5">Upload your own photo or select an avatar</p>
+              </div>
+
+              {/* Upload DP from Gallery Option Card */}
+              <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-indigo-50/90 via-purple-50/70 to-indigo-50/90 border border-indigo-100 flex items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-md shadow-indigo-200 flex-shrink-0">
+                    <Upload size={18} />
+                  </div>
+                  <div className="text-left truncate">
+                    <div className="text-xs font-black text-slate-800 leading-tight">Upload from Gallery</div>
+                    <div className="text-[10px] font-semibold text-slate-500 truncate">Pick custom photo from device</div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold transition-all shadow-md shadow-indigo-200 flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
+                >
+                  {isUploading ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ImageIcon size={14} />
+                      <span>Browse</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* User's custom photo if one was previously uploaded */}
+              {customPhoto && (
+                <div className="mb-4 p-2.5 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl overflow-hidden border-2 border-indigo-500 relative flex-shrink-0 bg-white shadow-xs">
+                      <img src={customPhoto} alt="Your Custom DP" className="w-full h-full object-cover" />
+                      {user?.photo === customPhoto && (
+                        <div className="absolute inset-0 bg-indigo-600/35 flex items-center justify-center">
+                          <Check size={14} className="text-white drop-shadow stroke-[3]" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-left">
+                      <div className="text-xs font-bold text-slate-800">Your Uploaded DP</div>
+                      <div className="text-[10px] font-semibold text-indigo-600">
+                        {user?.photo === customPhoto ? '● Active Profile Picture' : 'Click to select'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {user?.photo !== customPhoto && (
+                      <button
+                        type="button"
+                        onClick={() => handleSelectAvatar(customPhoto)}
+                        className="px-2.5 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 transition-colors cursor-pointer"
+                      >
+                        Use
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Change
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Divider */}
+              <div className="flex items-center gap-2 mb-3 px-1">
+                <div className="h-px bg-slate-200 flex-1" />
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Or Choose Character Avatar</span>
+                <div className="h-px bg-slate-200 flex-1" />
+              </div>
               
               {/* Scrollable grid container to fit perfectly on all screens */}
               <div className="overflow-y-auto pr-1 flex-1 min-h-0 scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
-                <div className="grid grid-cols-3 gap-4 p-1">
+                <div className="grid grid-cols-3 gap-3 p-1">
                   {AVATAR_OPTIONS.map((url, i) => (
                     <motion.button
                       key={i}
-                      whileHover={{ scale: 1.08 }}
+                      whileHover={{ scale: 1.06 }}
                       whileTap={{ scale: 0.95 }}
                       onClick={() => handleSelectAvatar(url)}
                       className={cn(
-                        "aspect-square rounded-2xl overflow-hidden border-4 transition-colors relative bg-slate-50",
-                        user?.photo === url ? "border-indigo-500 shadow-md shadow-indigo-100" : "border-transparent hover:border-slate-100"
+                        "aspect-square rounded-2xl overflow-hidden border-4 transition-all relative bg-slate-50 cursor-pointer",
+                        user?.photo === url ? "border-indigo-500 shadow-md shadow-indigo-100 ring-2 ring-indigo-300" : "border-transparent hover:border-slate-200"
                       )}
                     >
                       <img src={url} alt={`Avatar ${i}`} className="w-full h-full object-cover" />
+                      {user?.photo === url && (
+                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                          <Check size={10} className="stroke-[3]" />
+                        </div>
+                      )}
                     </motion.button>
                   ))}
                 </div>
@@ -412,7 +698,7 @@ export const ProfileScreen: React.FC = () => {
 
               <button 
                 onClick={() => setShowAvatarPicker(false)}
-                className="w-full mt-6 py-3.5 bg-slate-100 rounded-2xl text-slate-500 font-bold hover:bg-slate-200 transition-colors cursor-pointer"
+                className="w-full mt-4 py-3 bg-slate-100 rounded-2xl text-slate-500 font-bold hover:bg-slate-200 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -440,10 +726,10 @@ export const ProfileScreen: React.FC = () => {
       {/* Health Stats Grid */}
       <div className="grid grid-cols-2 gap-4">
         {[
-          { label: 'Posture Rating', val: postureRating, icon: Star, color: combinedPostureScore >= 80 ? 'text-amber-500' : combinedPostureScore >= 60 ? 'text-indigo-500' : 'text-rose-500', bg: 'bg-amber-50' },
+          { label: 'Posture Rating', val: postureRating, icon: Star, color: ratingColor, bg: ratingBg },
           { label: 'Session Time', val: sessionTimeDisplay, icon: Activity, color: 'text-indigo-500', bg: 'bg-indigo-50' },
           { label: 'Alert Rate', val: alertRateDisplay, icon: Heart, color: 'text-rose-500', bg: 'bg-rose-50' },
-          { label: 'Integrity', val: `${calculatedIntegrity}%`, icon: Shield, color: 'text-emerald-500', bg: 'bg-emerald-50' },
+          { label: 'Integrity', val: calculatedIntegrity !== null ? `${calculatedIntegrity}%` : '--', icon: Shield, color: calculatedIntegrity !== null && calculatedIntegrity >= 80 ? 'text-emerald-500' : 'text-indigo-500', bg: 'bg-emerald-50' },
         ].map((s, i) => (
           <div key={i} className="glass p-5 rounded-[28px] shadow-soft flex items-center gap-4 border-white/40">
              <div className={cn("w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-soft", s.bg, s.color)}>

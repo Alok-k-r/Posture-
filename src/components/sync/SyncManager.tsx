@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { RootState, setOnlineStatus, removeFromSyncQueue, updateAngle, setThresholds, setHasPaired, setDeviceStatus, updateBattery, setPostureHistory, setIsRecordingSession, updateUser } from '../../store/store';
-import { Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { Wifi, WifiOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, auth, rtdb } from '../../lib/firebase';
 import { doc, onSnapshot, setDoc, collection, query, limit, orderBy } from 'firebase/firestore';
@@ -265,21 +265,6 @@ export const SyncManager: React.FC = () => {
             <span className="text-xs font-bold uppercase tracking-wider">Offline Mode</span>
           </div>
           <span className="text-[10px] font-medium opacity-80 italic">Changes will sync when reconnected</span>
-        </motion.div>
-      )}
-      
-      {isOnline && syncQueue.length > 0 && (
-        <motion.div
-          initial={{ y: -50, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={{ y: -50, opacity: 0 }}
-          className="fixed top-0 left-0 right-0 z-[200] bg-blue text-white py-2 px-4 flex items-center justify-between shadow-lg"
-        >
-          <div className="flex items-center gap-2">
-            <RefreshCw size={16} className="animate-spin" />
-            <span className="text-xs font-bold uppercase tracking-wider">Syncing Changes...</span>
-          </div>
-          <span className="text-[10px] font-medium opacity-80">{syncQueue.length} items pending</span>
         </motion.div>
       )}
     </AnimatePresence>

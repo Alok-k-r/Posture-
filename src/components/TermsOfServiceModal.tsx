@@ -117,9 +117,13 @@ export const TermsOfServiceModal: React.FC<TermsOfServiceModalProps> = ({ isOpen
   );
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-    printWindow.document.write(`
+    try {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        window.print();
+        return;
+      }
+      printWindow.document.write(`
       <html>
         <head>
           <title>PostureCare - Terms of Service</title>
@@ -148,6 +152,9 @@ export const TermsOfServiceModal: React.FC<TermsOfServiceModalProps> = ({ isOpen
     `);
     printWindow.document.close();
     printWindow.print();
+    } catch {
+      window.print();
+    }
   };
 
   return (

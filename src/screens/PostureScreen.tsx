@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
 import { 
@@ -10,11 +10,13 @@ import {
   resetSessionStats, 
   setThresholds, 
   setDeviceStatus, 
-  setHasPaired 
+  setHasPaired,
+  calculateLiveAlignmentScore
 } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { Spine3DModel } from '../components/spine/Spine3DModel';
 import { SlouchAlarmManager } from '../components/posture/SlouchAlarmManager';
+import { DeviceRequiredModal } from '../components/modals/DeviceRequiredModal';
 import { 
   Activity, 
   Shield, 
@@ -51,7 +53,8 @@ import {
   AlertTriangle,
   Layers,
   BarChart2,
-  Dumbbell
+  Dumbbell,
+  Trash2
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { AreaChart, Area, ResponsiveContainer, YAxis, Tooltip, BarChart, Bar, XAxis } from 'recharts';
@@ -63,6 +66,8 @@ import { SessionService, UnifiedSession } from '../services/sessionService';
 import { LocalModelService, LocalBiomechanicalMetrics } from '../services/localModelService';
 import { PosturePredictionView } from '../components/posture/PosturePredictionView';
 import { PostureMlForecastService } from '../services/postureMlForecastService';
+import { ImuTelemetryFilter } from '../services/biomechanicsEngine';
+import toast from 'react-hot-toast';
 
 interface Exercise {
   id: string;
@@ -128,6 +133,7 @@ export const PostureScreen: React.FC = () => {
     isRecordingSession, 
     totalSessionSeconds, 
     goodSessionSeconds, 
+    warnSessionSeconds,
     incidents, 
     baselineAngle
   } = posture;
@@ -136,11 +142,15 @@ export const PostureScreen: React.FC = () => {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [autoOscillate, setAutoOscillate] = useState(true);
+  const [autoOscillate, setAutoOscillate] = useState(false);
   const [showSimulator, setShowSimulator] = useState(false);
   const [audioAlerts, setAudioAlerts] = useState(true);
   const [recentSessions, setRecentSessions] = useState<UnifiedSession[]>([]);
   const [selectedHistoryFilter, setSelectedHistoryFilter] = useState<string>('0'); // '0' is Today by default
+  const [isDeviceRequiredModalOpen, setIsDeviceRequiredModalOpen] = useState(false);
+  const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState(false);
+
+  const isDeviceReady = Boolean(device.isConnected || isSimulating);
 
   // Exercise active state
   const [activeExerciseIndex, setActiveExerciseIndex] = useState<number | null>(null);
@@ -169,20 +179,22 @@ export const PostureScreen: React.FC = () => {
     return () => unsub();
   }, [user?.id, auth.currentUser?.uid]);
 
-  // Auto-oscillation simulation
+  // Auto-oscillation simulation strictly clamped between 50° and 90°
   useEffect(() => {
     if (!isSimulating || !autoOscillate) return;
 
     const interval = setInterval(() => {
-      let nextAngle = angleRef.current + simulationDirRef.current * 4;
-      if (nextAngle <= 42) {
-        nextAngle = 42;
+      let nextAngle = angleRef.current + simulationDirRef.current * 3;
+      if (nextAngle <= 50) {
+        nextAngle = 50;
         simulationDirRef.current = 1;
-      } else if (nextAngle >= 96) {
-        nextAngle = 96;
+      } else if (nextAngle >= 90) {
+        nextAngle = 90;
         simulationDirRef.current = -1;
       }
-      dispatch(updateAngle(nextAngle));
+      nextAngle = Math.max(0, Math.min(90, Math.round(nextAngle)));
+      const filtered = ImuTelemetryFilter.processSample(nextAngle);
+      dispatch(updateAngle(filtered));
     }, 1200);
 
     return () => clearInterval(interval);
@@ -353,9 +365,37 @@ export const PostureScreen: React.FC = () => {
     ? 'text-amber-600 bg-amber-50 border-amber-200' 
     : 'text-rose-600 bg-rose-50 border-rose-200';
 
+  const safeAngle = Math.max(0, Math.min(90, Math.round(Number(angle) || 90)));
+  const safeBaseline = Math.max(0, Math.min(90, Math.round(Number(baselineAngle) || 90)));
+  // Torso inclination is strictly integer forward tilt from baseline [0°, 90°] with zero decimals
+  const torsoTilt = Math.max(0, Math.min(90, Math.round(safeBaseline - safeAngle)));
+
+  const displayAlignmentScore = isRecordingSession && totalSessionSeconds > 0
+    ? Math.max(0, Math.min(100, Math.round(score)))
+    : calculateLiveAlignmentScore(safeAngle, safeBaseline, thresholds);
+
+  // Seamlessly incorporate active live monitoring session into ML data stream
+  const unifiedSessionsWithLive = useMemo(() => {
+    const list = [...recentSessions];
+    if (isRecordingSession || totalSessionSeconds > 0) {
+      list.unshift({
+        id: 'current-live-session',
+        date: posture.sessionStartTime || new Date().toISOString(),
+        duration: totalSessionSeconds,
+        score: displayAlignmentScore,
+        slouches: incidents,
+        goodSessionSeconds: goodSessionSeconds,
+        warnSessionSeconds: warnSessionSeconds,
+        status: displayAlignmentScore >= 80 ? 'Excellent' : displayAlignmentScore >= 60 ? 'Fair' : 'Poor',
+        source: 'local'
+      });
+    }
+    return list;
+  }, [recentSessions, isRecordingSession, totalSessionSeconds, displayAlignmentScore, incidents, goodSessionSeconds, warnSessionSeconds, posture.sessionStartTime]);
+
   const handleSaveSession = async () => {
     if (totalSessionSeconds <= 0) {
-      alert("No posture data recorded in this session yet.");
+      toast.error("No posture data recorded in this session yet.");
       return;
     }
 
@@ -406,7 +446,7 @@ export const PostureScreen: React.FC = () => {
 
       dispatch(setIsRecordingSession(false));
       dispatch(resetSessionStats());
-      alert("🎉 Posture session saved successfully!");
+      toast.success("🎉 Posture session saved successfully!");
     } catch (error: any) {
       console.error("Failed to save session:", error);
       dispatch(setIsRecordingSession(false));
@@ -414,6 +454,13 @@ export const PostureScreen: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleConfirmCancelSession = () => {
+    dispatch(setIsRecordingSession(false));
+    dispatch(resetSessionStats());
+    setIsCancelConfirmOpen(false);
+    toast.success("Recording session cancelled and discarded.");
   };
 
   const handleGenerateSummary = async () => {
@@ -453,7 +500,7 @@ export const PostureScreen: React.FC = () => {
 
   const chartData = history.slice(0, 30).reverse().map((a, i) => ({
     time: `${i}s`,
-    angle: a
+    angle: Math.round(Number(a)) || 0
   }));
 
   return (
@@ -540,7 +587,7 @@ export const PostureScreen: React.FC = () => {
           {/* Main Hero Live Biofeedback Card */}
           <div 
             data-tour="posture-ring"
-            className="bg-white rounded-[32px] p-6 sm:p-7 shadow-[0_12px_32px_-8px_rgba(15,23,42,0.08),0_4px_12px_-2px_rgba(15,23,42,0.03)] border border-slate-100/90 relative overflow-hidden flex flex-col justify-between space-y-4 transition-all"
+            className="bg-white rounded-[32px] p-6 sm:p-7 shadow-[0_12px_32px_-8px_rgba(15,23,42,0.08),0_4px_12px_-2px_rgba(15,23,42,0.03)] border border-slate-100/90 relative overflow-hidden flex flex-col justify-between space-y-4 min-h-[440px]"
           >
             {/* Soft Dynamic Gradient Background Glow */}
             <div 
@@ -551,19 +598,19 @@ export const PostureScreen: React.FC = () => {
             />
 
             {/* Card Header: Dynamic Status & Clinical Badge */}
-            <div className="flex items-start justify-between relative z-10">
+            <div className="flex items-center justify-between relative z-10 min-h-[46px]">
               <div>
                 <div className="flex items-center gap-2">
                   <span className={cn("w-2 h-2 rounded-full animate-pulse", statusTheme.dotBg)} />
                   <span 
-                    className="text-xs sm:text-sm font-black uppercase tracking-wider"
+                    className="text-xs sm:text-sm font-black uppercase tracking-wider transition-colors duration-500"
                     style={{ color: statusTheme.colorHex }}
                   >
                     {statusTheme.statusText}
                   </span>
                 </div>
                 <span 
-                  className="text-[9px] sm:text-[10px] font-black tracking-widest uppercase block mt-0.5"
+                  className="text-[9px] sm:text-[10px] font-black tracking-widest uppercase block mt-0.5 transition-colors duration-500"
                   style={{ color: statusTheme.colorHex, opacity: 0.8 }}
                 >
                   CLINICAL PRECISION
@@ -572,7 +619,7 @@ export const PostureScreen: React.FC = () => {
 
               {/* Status Pill */}
               <div className={cn(
-                "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border shadow-2xs",
+                "px-3.5 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider border shadow-2xs min-w-[125px] text-center shrink-0 transition-colors duration-500",
                 statusColorClass
               )}>
                 {statusLabel}
@@ -581,38 +628,38 @@ export const PostureScreen: React.FC = () => {
 
             {/* Center: Circular Stage with PostureFigure + Overlapping Floating Angle Pill */}
             <div className="relative flex items-center justify-center py-2 z-10">
-              <div className="w-52 h-52 sm:w-56 sm:h-56 rounded-full bg-gradient-to-b from-[#f8fafc] to-[#f1f5f9] border border-slate-200/80 flex items-center justify-center relative shadow-[inset_0_2px_6px_rgba(0,0,0,0.02),0_4px_16px_rgba(15,23,42,0.03)]">
-                <PostureFigure size={165} angle={angle} />
+              <div className="w-52 h-52 sm:w-56 sm:h-56 rounded-full bg-gradient-to-b from-[#f8fafc] to-[#f1f5f9] border border-slate-200/80 flex items-center justify-center relative shadow-[inset_0_2px_6px_rgba(0,0,0,0.02),0_4px_16px_rgba(15,23,42,0.03)] shrink-0 overflow-hidden">
+                <PostureFigure size={165} angle={safeAngle} />
+              </div>
 
-                {/* Overlapping Floating Angle Pill on Bottom-Right */}
-                <div className="absolute bottom-2 -right-2 sm:bottom-3 sm:-right-3 z-20 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl shadow-[0_8px_20px_-4px_rgba(15,23,42,0.12),0_2px_6px_-1px_rgba(15,23,42,0.04)] border border-slate-100/90 text-center min-w-[76px] select-none">
-                  <span 
-                    className="text-[9px] font-black tracking-widest uppercase block transition-colors"
-                    style={{ color: statusTheme.colorHex }}
-                  >
-                    ANGLE
-                  </span>
-                  <span 
-                    className="text-2xl font-black tracking-tight leading-none transition-colors"
-                    style={{ color: statusTheme.colorHex }}
-                  >
-                    {Math.round(angle)}°
-                  </span>
-                </div>
+              {/* Overlapping Floating Angle Pill on Bottom-Right */}
+              <div className="absolute bottom-2 right-1/2 translate-x-24 sm:translate-x-26 z-20 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl shadow-[0_8px_20px_-4px_rgba(15,23,42,0.12),0_2px_6px_-1px_rgba(15,23,42,0.04)] border border-slate-100/90 text-center w-[76px] shrink-0 select-none">
+                <span 
+                  className="text-[9px] font-black tracking-widest uppercase block transition-colors duration-500"
+                  style={{ color: statusTheme.colorHex }}
+                >
+                  ANGLE
+                </span>
+                <span 
+                  className="text-2xl font-black tracking-tight leading-none transition-colors duration-500"
+                  style={{ color: statusTheme.colorHex }}
+                >
+                  {safeAngle}°
+                </span>
               </div>
             </div>
 
             {/* Bottom: Alignment Score + Clean Controls */}
-            <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4 relative z-10 border-t border-slate-100/80">
-              <div>
+            <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4 relative z-10 border-t border-slate-100/80 min-h-[60px]">
+              <div className="min-w-[120px] shrink-0">
                 <div 
-                  className="text-3xl sm:text-4xl font-black tracking-tight leading-none"
+                  className="text-3xl sm:text-4xl font-black tracking-tight leading-none transition-colors duration-500"
                   style={{ color: statusTheme.colorHex }}
                 >
-                  {Math.round(score)}%
+                  {displayAlignmentScore}%
                 </div>
                 <span 
-                  className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest block mt-0.5"
+                  className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest block mt-0.5 transition-colors duration-500"
                   style={{ color: statusTheme.colorHex, opacity: 0.8 }}
                 >
                   ALIGNMENT SCORE
@@ -622,13 +669,56 @@ export const PostureScreen: React.FC = () => {
               {/* Action Controls Cluster */}
               <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2.5 w-full sm:w-auto">
                 {!isRecordingSession ? (
-                  <button
-                    onClick={() => dispatch(setIsRecordingSession(true))}
-                    className="px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-2"
-                  >
-                    <Play size={13} fill="currentColor" />
-                    <span>{totalSessionSeconds > 0 ? "Resume Session" : "Start Session"}</span>
-                  </button>
+                  totalSessionSeconds > 0 ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          if (!isDeviceReady) {
+                            setIsDeviceRequiredModalOpen(true);
+                          } else {
+                            dispatch(setIsRecordingSession(true));
+                          }
+                        }}
+                        className="px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-1.5"
+                      >
+                        <Play size={13} fill="currentColor" />
+                        <span>Resume</span>
+                      </button>
+
+                      <button
+                        onClick={handleSaveSession}
+                        disabled={isSaving}
+                        className="px-4 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <CheckCircle2 size={14} />
+                        <span>{isSaving ? "Saving..." : "Save"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsCancelConfirmOpen(true)}
+                        className="px-3.5 py-2.5 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 hover:border-rose-300 font-black text-xs uppercase tracking-wider shadow-2xs transition-all active:scale-95 flex items-center gap-1.5"
+                        title="Cancel and discard session recording"
+                      >
+                        <X size={13} className="stroke-[2.5]" />
+                        <span>Cancel</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (!isDeviceReady) {
+                          setIsDeviceRequiredModalOpen(true);
+                        } else {
+                          dispatch(setIsRecordingSession(true));
+                        }
+                      }}
+                      className="px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-2"
+                    >
+                      <Play size={13} fill="currentColor" />
+                      <span>Start Session</span>
+                    </button>
+                  )
                 ) : (
                   <div className="flex items-center gap-2">
                     <button
@@ -647,59 +737,155 @@ export const PostureScreen: React.FC = () => {
                       <CheckCircle2 size={14} />
                       <span>{isSaving ? "Saving..." : "Save"}</span>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsCancelConfirmOpen(true)}
+                      className="px-3.5 py-2.5 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 hover:border-rose-300 font-black text-xs uppercase tracking-wider shadow-2xs transition-all active:scale-95 flex items-center gap-1.5"
+                      title="Cancel and discard session recording"
+                    >
+                      <X size={13} className="stroke-[2.5]" />
+                      <span>Cancel</span>
+                    </button>
                   </div>
                 )}
 
                 <button
-                  onClick={() => dispatch(recalibrateBaseline(angle))}
+                  onClick={() => {
+                    dispatch(recalibrateBaseline(safeAngle));
+                    ImuTelemetryFilter.reset(safeAngle);
+                  }}
                   className="px-3.5 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5"
                   title="Recalibrate Zero Baseline"
                 >
                   <Target size={13} />
-                  <span>Zero ({Math.round(baselineAngle)}°)</span>
+                  <span>Zero ({safeBaseline}°)</span>
                 </button>
               </div>
             </div>
           </div>
 
+          {/* Interactive Posture Angle & Inclination Tuning Controller */}
+          <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-3 bg-white/90">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sliders size={15} className="text-indigo-600" />
+                <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                  Posture Angle Controller (0° – 90°)
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setAutoOscillate(!autoOscillate)}
+                className={cn(
+                  "px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 self-start sm:self-auto",
+                  autoOscillate 
+                    ? "bg-amber-100 text-amber-900 border border-amber-300" 
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200"
+                )}
+                title="Toggle automated angle oscillation"
+              >
+                {autoOscillate ? (
+                  <>
+                    <Pause size={11} fill="currentColor" />
+                    <span>Auto Drift: ON</span>
+                  </>
+                ) : (
+                  <>
+                    <Play size={11} fill="currentColor" />
+                    <span>Auto Drift: OFF</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-[10px] font-bold text-slate-500">
+                <span>0° (Slouch / Flat)</span>
+                <span className="text-sm font-black text-indigo-600 font-mono">{safeAngle}°</span>
+                <span>90° (Optimal Upright)</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="90"
+                step="1"
+                value={safeAngle}
+                onChange={(e) => {
+                  setAutoOscillate(false);
+                  const val = Math.max(0, Math.min(90, Math.round(Number(e.target.value))));
+                  dispatch(updateAngle(val));
+                }}
+                className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600 shadow-inner"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-0.5">
+              {[
+                { label: '90° Upright', val: 90 },
+                { label: '80° Good Target', val: 80 },
+                { label: '65° Slouch Alert', val: 65 },
+                { label: '50° Deep Slouch', val: 50 },
+              ].map(preset => (
+                <button
+                  key={preset.val}
+                  type="button"
+                  onClick={() => {
+                    setAutoOscillate(false);
+                    dispatch(updateAngle(preset.val));
+                  }}
+                  className={cn(
+                    "px-3 py-1 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border",
+                    safeAngle === preset.val 
+                      ? "bg-indigo-600 text-white border-indigo-600 shadow-xs" 
+                      : "bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200"
+                  )}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* 4 Essential Realtime Telemetry Cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft h-[106px] flex flex-col justify-between overflow-hidden">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block truncate">
                 Torso Inclination
               </span>
-              <div className="text-2xl font-black text-slate-900">{Math.round(angle)}°</div>
-              <span className="text-[10px] font-semibold text-slate-500">
-                Target: ≥{thresholds.good}°
+              <div className="text-2xl font-black text-slate-900 leading-none">{torsoTilt}°</div>
+              <span className={cn("text-[10px] font-semibold truncate block", torsoTilt <= 10 ? "text-emerald-600" : torsoTilt <= 18 ? "text-amber-600" : "text-rose-600")}>
+                {torsoTilt <= 10 ? "Target ≤10° (Optimal)" : torsoTilt <= 18 ? "Target ≤10° (Mild Tilt)" : "Exceeds 10° (Slouch)"}
               </span>
             </div>
 
-            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft h-[106px] flex flex-col justify-between overflow-hidden">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block truncate">
                 Spinal Load
               </span>
-              <div className="text-2xl font-black text-slate-900">{localAI.upperBackStrainLbs} lbs</div>
-              <span className={cn("text-[10px] font-bold", localAI.upperBackStrainLbs <= 15 ? "text-emerald-600" : "text-amber-600")}>
-                {localAI.loadClassification}
+              <div className="text-2xl font-black text-slate-900 leading-none">{localAI.upperBackStrainLbs} lbs</div>
+              <span className={cn("text-[10px] font-bold truncate block", localAI.upperBackStrainLbs <= 15 ? "text-emerald-600" : "text-amber-600")}>
+                {localAI.loadClassification.replace('Cervical ', '')}
               </span>
             </div>
 
-            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft h-[106px] flex flex-col justify-between overflow-hidden">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block truncate">
                 Upright Time
               </span>
-              <div className="text-2xl font-black text-slate-900">{formatDuration(goodSessionSeconds)}</div>
-              <span className="text-[10px] font-semibold text-slate-500">
+              <div className="text-2xl font-black text-slate-900 leading-none">{formatDuration(goodSessionSeconds)}</div>
+              <span className="text-[10px] font-semibold text-slate-500 truncate block">
                 of {formatDuration(totalSessionSeconds)}
               </span>
             </div>
 
-            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+            <div className="glass p-4 rounded-3xl border border-slate-100 shadow-soft h-[106px] flex flex-col justify-between overflow-hidden">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block truncate">
                 Slouch Alerts
               </span>
-              <div className="text-2xl font-black text-slate-900">{incidents || 0}</div>
-              <span className="text-[10px] font-semibold text-slate-500">
+              <div className="text-2xl font-black text-slate-900 leading-none">{incidents || 0}</div>
+              <span className="text-[10px] font-semibold text-slate-500 truncate block">
                 {incidents === 0 ? "Zero alerts" : "Detected"}
               </span>
             </div>
@@ -730,7 +916,7 @@ export const PostureScreen: React.FC = () => {
                   </defs>
                   <YAxis domain={[30, 100]} tick={{ fontSize: 9 }} stroke="#cbd5e1" />
                   <Tooltip 
-                    formatter={(val: any) => [`${val}°`, 'Angle']}
+                    formatter={(val: any) => [`${Math.round(Number(val)) || 0}°`, 'Angle']}
                     contentStyle={{ borderRadius: '12px', fontSize: '11px', border: '1px solid #e2e8f0' }}
                   />
                   <Area 
@@ -860,8 +1046,8 @@ export const PostureScreen: React.FC = () => {
       {/* AI PREDICTION & TRAJECTORY TAB */}
       {activeTab === 'prediction' && (
         <PosturePredictionView 
-          currentScore={score}
-          recentSessions={recentSessions}
+          currentScore={displayAlignmentScore}
+          recentSessions={unifiedSessionsWithLive}
           userProfile={user ? { age: user.age, height: user.height, weight: user.weight, name: user.name } : undefined}
         />
       )}
@@ -1479,6 +1665,67 @@ export const PostureScreen: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* Cancel Session Double-Confirmation Modal */}
+      <AnimatePresence>
+        {isCancelConfirmOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsCancelConfirmOpen(false)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 16 }}
+              transition={{ duration: 0.2 }}
+              className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl border border-slate-100 z-10 p-6 space-y-4"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-50 border border-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                  <AlertTriangle size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">Cancel Recording?</h3>
+                  <p className="text-xs text-slate-500 font-medium">Confirmation required</p>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Are you sure you want to cancel this posture recording session? All session duration (<strong className="font-black text-slate-900">{formatDuration(totalSessionSeconds)}</strong>) and unrecorded live data will be permanently discarded.
+              </p>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCancelConfirmOpen(false)}
+                  className="px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs uppercase tracking-wider transition-all active:scale-95"
+                >
+                  Keep Recording
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmCancelSession}
+                  className="px-4 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all active:scale-95 flex items-center gap-1.5"
+                >
+                  <Trash2 size={13} />
+                  <span>Yes, Cancel</span>
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <DeviceRequiredModal
+        isOpen={isDeviceRequiredModalOpen}
+        onClose={() => setIsDeviceRequiredModalOpen(false)}
+        onConnectedAndStart={() => dispatch(setIsRecordingSession(true))}
+      />
     </div>
   );
 };

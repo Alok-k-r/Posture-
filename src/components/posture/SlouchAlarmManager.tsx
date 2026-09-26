@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { RootState, tickSessionStats } from '../../store/store';
+import { RootState, tickSessionStats, setIsRecordingSession } from '../../store/store';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertOctagon, Bell, Coffee, Play, Sliders, VolumeX, Volume2, ShieldCheck, HelpCircle, ChevronRight, Clock, ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -73,6 +73,15 @@ export const SlouchAlarmManager: React.FC = () => {
     prevIncidentsRef.current = incidents;
   }, [incidents]);
 
+  const isDeviceActive = Boolean(isConnected || isSimulating);
+
+  // Auto-pause if device disconnects while recording
+  useEffect(() => {
+    if (isRecordingSession && !isDeviceActive) {
+      dispatch(setIsRecordingSession(false));
+    }
+  }, [isRecordingSession, isDeviceActive, dispatch]);
+
   // 1. Clock timer
   useEffect(() => {
     const clockTimer = setInterval(() => {
@@ -81,11 +90,11 @@ export const SlouchAlarmManager: React.FC = () => {
     return () => clearInterval(clockTimer);
   }, []);
 
-  // 2. Core slouch clock / counter effect with robust 3-second debounce
+  // 2. Core slouch clock / counter effect with robust 3-second debounce (only when actively connected or simulating)
   useEffect(() => {
     let interval: any;
     
-    if (isRecordingSession) {
+    if (isRecordingSession && isDeviceActive) {
       interval = setInterval(() => {
         // Dispatch session metrics tick to Redux
         dispatch(tickSessionStats());

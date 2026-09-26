@@ -29,6 +29,7 @@ import { cn } from '../lib/utils';
 import { LocalModelService } from '../services/localModelService';
 import { SessionService, UnifiedSession } from '../services/sessionService';
 import { auth } from '../lib/firebase';
+import { DeviceRequiredModal } from '../components/modals/DeviceRequiredModal';
 
 export const AnalyticsScreen: React.FC = () => {
   const dispatch = useDispatch();
@@ -39,11 +40,22 @@ export const AnalyticsScreen: React.FC = () => {
     incidents,
     goodSessionSeconds,
     totalSessionSeconds,
-    isRecordingSession
+    isRecordingSession,
+    isSimulating
   } = useSelector((state: RootState) => state.posture);
+  const device = useSelector((state: RootState) => state.device);
   const user = useSelector((state: RootState) => state.auth.user);
 
   const [sessions, setSessions] = useState<UnifiedSession[]>([]);
+  const [isDeviceRequiredModalOpen, setIsDeviceRequiredModalOpen] = useState(false);
+
+  const handleStartRecording = () => {
+    if (!device.isConnected && !isSimulating) {
+      setIsDeviceRequiredModalOpen(true);
+      return;
+    }
+    dispatch(setIsRecordingSession(true));
+  };
 
   useEffect(() => {
     const userId = user?.id || auth.currentUser?.uid || 'guest';
@@ -448,7 +460,7 @@ export const AnalyticsScreen: React.FC = () => {
                   Real-time trapezius eccentric tension and gravitational lever force modeling require an active posture recording session.
                 </p>
                 <button 
-                  onClick={() => dispatch(setIsRecordingSession(true))}
+                  onClick={handleStartRecording}
                   className="mt-3.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full text-[9px] font-black uppercase tracking-widest transition-all active:scale-95"
                 >
                   Start Recording
@@ -537,7 +549,7 @@ export const AnalyticsScreen: React.FC = () => {
                   Paraspinal and levator scapulae fatigue estimation models activate only during active postural composure recording.
                 </p>
                 <button 
-                  onClick={() => dispatch(setIsRecordingSession(true))}
+                  onClick={handleStartRecording}
                   className="mt-3.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full text-[9px] font-black uppercase tracking-widest transition-all active:scale-95"
                 >
                   Start Recording
@@ -623,7 +635,7 @@ export const AnalyticsScreen: React.FC = () => {
                   Compliance metrics, alert realignment speeds, and recovery rate computations activate only during active postural tracking.
                 </p>
                 <button 
-                  onClick={() => dispatch(setIsRecordingSession(true))}
+                  onClick={handleStartRecording}
                   className="mt-3.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full text-[9px] font-black uppercase tracking-widest transition-all active:scale-95"
                 >
                   Start Recording
@@ -822,15 +834,15 @@ export const AnalyticsScreen: React.FC = () => {
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-1">
                         <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex justify-between items-center">
                           <span>Warning Level</span>
-                          <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-black">{localMetrics.personalizedWarnThreshold}°</span>
+                          <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-black">{Math.round(localMetrics.personalizedWarnThreshold)}°</span>
                         </div>
                         <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex justify-between items-center">
                           <span>Good Standard Limit</span>
-                          <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-black">{localMetrics.personalizedGoodThreshold}°</span>
+                          <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-black">{Math.round(localMetrics.personalizedGoodThreshold)}°</span>
                         </div>
                         <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex justify-between items-center">
                           <span>Correction Reentry</span>
-                          <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded font-black">{localMetrics.personalizedRecoveryThreshold}°</span>
+                          <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded font-black">{Math.round(localMetrics.personalizedRecoveryThreshold)}°</span>
                         </div>
                       </div>
                     </div>
@@ -877,6 +889,12 @@ export const AnalyticsScreen: React.FC = () => {
 
         </div>
       )}
+
+      <DeviceRequiredModal
+        isOpen={isDeviceRequiredModalOpen}
+        onClose={() => setIsDeviceRequiredModalOpen(false)}
+        onConnectedAndStart={() => dispatch(setIsRecordingSession(true))}
+      />
     </div>
   );
 };
