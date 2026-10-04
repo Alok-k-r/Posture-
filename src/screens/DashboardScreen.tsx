@@ -1,12 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useSelector, useDispatch } from 'react-redux';
-<<<<<<< HEAD
-import { RootState, setIsRecordingSession, setDeviceStatus, setHasPaired } from '../store/store';
+import { RootState, setIsRecordingSession, setDeviceStatus, setHasPaired, calculateLiveAlignmentScore } from '../store/store';
 import { bluetoothService } from '../services/bluetoothService';
-=======
-import { RootState, setIsRecordingSession, calculateLiveAlignmentScore } from '../store/store';
->>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
 import { PostureFigure } from '../components/posture/PostureFigure';
 import { 
   Shield, 
@@ -20,12 +16,14 @@ import {
   Bluetooth,
   Smartphone,
   CheckCircle2,
+  Check,
   X,
   ArrowUpRight,
   Activity,
   Calendar as CalendarIcon,
   Play,
-  Pause
+  Pause,
+  RefreshCw
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -121,15 +119,7 @@ export const DashboardScreen: React.FC = () => {
     totalTodayWeightedScore += (posture.score * activeDuration);
   }
 
-<<<<<<< HEAD
-  // Real-time live score fallback: if device is streaming or user is monitoring, reflect current live alignment rating
-  const liveAlignmentScore = posture.score > 0 
-    ? posture.score 
-    : (posture.angle >= thresholds.good ? 100 : posture.angle >= thresholds.warn ? 75 : 50);
-
-=======
   const liveAlignmentScore = calculateLiveAlignmentScore(posture.angle, posture.baselineAngle, thresholds);
->>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
   const combinedTodayIntegrity = combinedTodayTotalSecs > 0
     ? Math.round(totalTodayWeightedScore / combinedTodayTotalSecs)
     : (todayCompletedSessions.length > 0 ? todayCompletedSessions[0].score : (posture.isRecordingSession ? posture.score : liveAlignmentScore));
@@ -253,19 +243,35 @@ export const DashboardScreen: React.FC = () => {
       <div className="flex items-center justify-between gap-2.5 pt-1">
         {/* Left: Online Status + Recording Button */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className={cn(
-            "px-2.5 py-1.5 rounded-full text-[10px] sm:text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors shadow-2xs shrink-0",
-            device.isConnected 
-              ? "bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0]" 
-              : "bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3]"
-          )}>
-            {device.isConnected ? (
+          <button
+            onClick={handleDevicePillClick}
+            disabled={isConnectingBle}
+            className={cn(
+              "px-2.5 py-1.5 rounded-full text-[10px] sm:text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors shadow-2xs shrink-0 cursor-pointer active:scale-95",
+              device.isConnected 
+                ? "bg-[#ecfdf5] text-[#059669] border border-[#a7f3d0] hover:bg-[#d1fae5]" 
+                : "bg-[#ffe4e6] text-[#e11d48] border border-[#fecdd3] hover:bg-[#fed7aa]"
+            )}
+            title={
+              device.isConnected 
+                ? `Hardware Connected (${device.batteryLevel}% Battery). Click for hardware settings.` 
+                : "Hardware Offline. Click to connect PosturePal Pod via Bluetooth."
+            }
+          >
+            {isConnectingBle ? (
+              <RefreshCw size={11} className="inline stroke-[2.5] animate-spin text-[#e11d48]" />
+            ) : device.isConnected ? (
               <Bluetooth size={12} className="inline stroke-[2.5] text-[#059669]" />
             ) : (
               <WifiOff size={11} className="inline stroke-[2.5]" />
             )}
-            {device.isConnected ? 'ONLINE' : 'OFFLINE'}
-          </span>
+            <span>{isConnectingBle ? 'CONNECTING...' : device.isConnected ? 'ONLINE' : 'CONNECT POD'}</span>
+            {device.isConnected && (
+              <span className="text-[9px] font-bold opacity-80 border-l border-[#a7f3d0] pl-1 ml-0.5">
+                {device.batteryLevel}%
+              </span>
+            )}
+          </button>
 
           <button
             onClick={handleRecordingToggle}
@@ -304,83 +310,8 @@ export const DashboardScreen: React.FC = () => {
           </button>
         </div>
 
-<<<<<<< HEAD
-        {/* Right: Status Pills & Doctor Avatar Box */}
-        <div className="flex items-center gap-2.5">
-          {/* Status Pills */}
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={handleDevicePillClick}
-              disabled={isConnectingBle}
-              className={cn(
-                "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer select-none active:scale-95 shadow-2xs border",
-                device.isConnected 
-                  ? "bg-[#ecfdf5] text-[#059669] border-[#a7f3d0] hover:bg-[#d1fae5]" 
-                  : "bg-[#ffe4e6] text-[#e11d48] border-[#fecdd3] hover:bg-[#fed7aa]"
-              )}
-              title={
-                device.isConnected 
-                  ? `Hardware Connected (${device.batteryLevel}% Battery). Click for hardware settings.` 
-                  : "Hardware Offline. Click to connect PosturePal Pod via Bluetooth."
-              }
-            >
-              {isConnectingBle ? (
-                <RefreshCw size={11} className="inline stroke-[2.5] animate-spin text-[#e11d48]" />
-              ) : device.isConnected ? (
-                <Bluetooth size={11} className="inline stroke-[2.5] text-[#059669]" />
-              ) : (
-                <WifiOff size={10} className="inline stroke-[2.5]" />
-              )}
-              <span>{isConnectingBle ? 'CONNECTING...' : device.isConnected ? 'ONLINE' : 'CONNECT POD'}</span>
-              {device.isConnected && (
-                <span className="text-[9px] font-bold opacity-80 border-l border-[#a7f3d0] pl-1 ml-0.5">
-                  {device.batteryLevel}%
-                </span>
-              )}
-            </button>
-
-            <button
-              onClick={handleRecordingToggle}
-              className={cn(
-                "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 border transition-all active:scale-95 cursor-pointer shadow-2xs select-none",
-                posture.isRecordingSession
-                  ? "bg-[#ffe4e6] text-[#e11d48] border-[#fecdd3] hover:bg-[#fed7aa]/30"
-                  : (posture.totalSessionSeconds || 0) > 0
-                  ? "bg-[#fef3c7] text-[#d97706] border-[#fde68a] hover:bg-[#fef08a]"
-                  : "bg-[#ede9fe] text-[#6366f1] border-[#ddd6fe] hover:bg-[#e0e7ff]"
-              )}
-              title={
-                posture.isRecordingSession
-                  ? "Recording session in progress. Click to pause."
-                  : (posture.totalSessionSeconds || 0) > 0
-                  ? "Session paused. Click to resume and open Posture."
-                  : "Click to start recording and open Posture."
-              }
-            >
-              {posture.isRecordingSession ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#e11d48] animate-pulse shrink-0" />
-                  <span>RECORDING</span>
-                </>
-              ) : (posture.totalSessionSeconds || 0) > 0 ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#d97706] shrink-0" />
-                  <span>PAUSED</span>
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#6366f1] shrink-0" />
-                  <span>START RECORDING</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Large Avatar Box */}
-=======
         {/* Right: Profile Avatar Box */}
         <div className="flex items-center shrink-0">
->>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
           <button 
             onClick={() => navigate('/profile')}
             className="w-12 h-12 rounded-full bg-white border-2 border-white shadow-md overflow-hidden flex items-center justify-center shrink-0 active:scale-95 transition-transform hover:ring-2 hover:ring-indigo-100"
@@ -670,35 +601,132 @@ export const DashboardScreen: React.FC = () => {
       </div>
 
       {/* 8. TODAY'S ACHIEVEMENTS */}
-      <div className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-soft space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-[#ede9fe] text-[#6366f1] flex items-center justify-center">
-            <Award size={20} />
-          </div>
-          <div>
-            <h3 className="text-sm font-black text-slate-900 tracking-tight">
-              Today's Achievements
-            </h3>
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">
-              AESTHETIC POSTURE MILESTONES
-            </span>
-          </div>
-        </div>
+      {(() => {
+        const targetMinutes = 45;
+        const targetSeconds = targetMinutes * 60;
+        const achievedSeconds = combinedTodayGoodSecs;
+        const achievedMinutes = Math.floor(achievedSeconds / 60);
+        const achievedRemainderSecs = achievedSeconds % 60;
+        const progressPercent = Math.min(100, Math.round((achievedSeconds / targetSeconds) * 100));
+        const isGoalAchieved = achievedSeconds >= targetSeconds;
+        const remainingMinutes = Math.max(0, targetMinutes - achievedMinutes);
 
-        <div className="space-y-2.5">
-          <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 size={18} className="text-[#10b981]" />
-              <span className="text-xs font-bold text-slate-700">
-                {Math.round(combinedTodayGoodSecs / 60)} minutes today.
-              </span>
+        // Sub-milestones
+        const milestones = [
+          { min: 15, label: 'Activation', desc: 'Postural baseline established', reached: achievedMinutes >= 15 },
+          { min: 30, label: 'Resilience', desc: 'Core & extensor muscle stamina', reached: achievedMinutes >= 30 },
+          { min: 45, label: 'Daily Champion', desc: 'Complete ergonomic protection', reached: achievedMinutes >= 45 },
+        ];
+
+        return (
+          <div className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-soft space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#ede9fe] text-[#6366f1] flex items-center justify-center shadow-inner">
+                  <Award size={20} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 tracking-tight flex items-center gap-2">
+                    Today's Achievements
+                    {isGoalAchieved && (
+                      <span className="text-[9px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
+                        Goal Hit 🎉
+                      </span>
+                    )}
+                  </h3>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">
+                    DAILY POSTURE DURATION TARGET (45 MIN)
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-right">
+                <span className="text-sm font-black text-slate-900">
+                  {progressPercent}%
+                </span>
+                <span className="text-[9px] font-bold text-slate-400 block uppercase">
+                  OF 45M GOAL
+                </span>
+              </div>
             </div>
-            <span className="text-[10px] font-black text-[#6366f1] uppercase bg-[#ede9fe] px-2.5 py-1 rounded-md">
-              Target 45m
-            </span>
+
+            {/* Visual Progress Bar */}
+            <div className="space-y-1.5">
+              <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-200/60">
+                <div 
+                  className={cn(
+                    "h-full rounded-full transition-all duration-700 bg-gradient-to-r",
+                    isGoalAchieved
+                      ? "from-emerald-400 to-teal-500 shadow-xs shadow-emerald-200"
+                      : progressPercent > 50
+                      ? "from-indigo-500 to-purple-500"
+                      : "from-blue-500 to-indigo-500"
+                  )}
+                  style={{ width: `${Math.max(progressPercent > 0 ? 4 : 0, progressPercent)}%` }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 pt-0.5">
+                <span>
+                  {achievedMinutes > 0 || achievedRemainderSecs > 0 ? (
+                    <span className="text-slate-800 font-extrabold">
+                      {achievedMinutes}m {achievedRemainderSecs > 0 && `${achievedRemainderSecs}s`}
+                    </span>
+                  ) : (
+                    '0m'
+                  )} in optimal posture
+                </span>
+                <span className="text-slate-400">
+                  {isGoalAchieved 
+                    ? '🎯 Daily target accomplished!' 
+                    : `${remainingMinutes}m remaining`}
+                </span>
+              </div>
+            </div>
+
+            {/* Milestones list */}
+            <div className="space-y-2 pt-1">
+              {milestones.map((m, idx) => (
+                <div 
+                  key={idx}
+                  className={cn(
+                    "p-3 rounded-2xl border transition-all flex items-center justify-between gap-3",
+                    m.reached 
+                      ? "bg-emerald-50/70 border-emerald-200 text-emerald-900" 
+                      : "bg-slate-50/70 border-slate-100 text-slate-500 opacity-80"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "w-7 h-7 rounded-xl flex items-center justify-center shrink-0 text-xs font-black",
+                      m.reached ? "bg-emerald-500 text-white" : "bg-slate-200 text-slate-500"
+                    )}>
+                      {m.reached ? <Check size={14} className="stroke-[3]" /> : `${m.min}m`}
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold leading-tight">
+                        {m.label} ({m.min}m)
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-medium">
+                        {m.desc}
+                      </div>
+                    </div>
+                  </div>
+
+                  <span className={cn(
+                    "text-[10px] font-black uppercase px-2 py-0.5 rounded-md shrink-0",
+                    m.reached 
+                      ? "bg-emerald-100 text-emerald-800" 
+                      : "bg-slate-200/80 text-slate-600"
+                  )}>
+                    {m.reached ? 'Completed' : `${Math.max(0, m.min - achievedMinutes)}m left`}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      </div>
+        );
+      })()}
 
       {/* 9. MONTHLY POSTURE COMPLIANCE CALENDAR */}
       <div className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-soft space-y-5">

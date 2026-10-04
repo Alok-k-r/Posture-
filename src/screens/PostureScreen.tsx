@@ -14,12 +14,8 @@ import {
   calculateLiveAlignmentScore
 } from '../store/store';
 import { PostureFigure } from '../components/posture/PostureFigure';
-import { Spine3DModel } from '../components/spine/Spine3DModel';
-<<<<<<< HEAD
-=======
 import { SlouchAlarmManager } from '../components/posture/SlouchAlarmManager';
 import { DeviceRequiredModal } from '../components/modals/DeviceRequiredModal';
->>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
 import { 
   Activity, 
   Shield, 
@@ -141,7 +137,7 @@ export const PostureScreen: React.FC = () => {
     baselineAngle
   } = posture;
 
-  const [activeTab, setActiveTab] = useState<'realtime' | 'prediction' | '3d' | 'biomechanics' | 'drills' | 'history'>('realtime');
+  const [activeTab, setActiveTab] = useState<'realtime' | 'prediction' | 'drills' | 'history'>('realtime');
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -182,9 +178,17 @@ export const PostureScreen: React.FC = () => {
     return () => unsub();
   }, [user?.id, auth.currentUser?.uid]);
 
-  // Auto-oscillation simulation strictly clamped between 50° and 90°
+  // Ensure mock simulation and auto-oscillation are disabled when physical hardware is connected
   useEffect(() => {
-    if (!isSimulating || !autoOscillate) return;
+    if (device.isConnected && (isSimulating || autoOscillate)) {
+      setAutoOscillate(false);
+      dispatch(setIsSimulating(false));
+    }
+  }, [device.isConnected, isSimulating, autoOscillate, dispatch]);
+
+  // Auto-oscillation simulation strictly clamped between 50° and 90° (only in manual demo mode without hardware)
+  useEffect(() => {
+    if (device.isConnected || !isSimulating || !autoOscillate) return;
 
     const interval = setInterval(() => {
       let nextAngle = angleRef.current + simulationDirRef.current * 3;
@@ -201,7 +205,7 @@ export const PostureScreen: React.FC = () => {
     }, 1200);
 
     return () => clearInterval(interval);
-  }, [isSimulating, autoOscillate, dispatch]);
+  }, [device.isConnected, isSimulating, autoOscillate, dispatch]);
 
   // Exercise completion synthesizer
   const playCompletionChime = () => {
@@ -516,7 +520,7 @@ export const PostureScreen: React.FC = () => {
             Live Posture Cockpit
           </h1>
           <p className="text-xs font-semibold text-slate-500 mt-0.5">
-            Biometric stance telemetry, 3D anatomical twin & clinical ergonomics
+            Biometric stance telemetry, AI trajectory & clinical ergonomics
           </p>
         </div>
 
@@ -549,8 +553,6 @@ export const PostureScreen: React.FC = () => {
         {[
           { id: 'realtime', label: 'Live Cockpit', icon: Activity },
           { id: 'prediction', label: 'AI Trajectory & Forecast', icon: TrendingUp, badge: 'ML' },
-          { id: '3d', label: '3D Anatomical Twin', icon: Box },
-          { id: 'biomechanics', label: 'Spinal Biomechanics', icon: BrainCircuit },
           { id: 'drills', label: 'Posture Exercises', icon: Dumbbell },
           { id: 'history', label: 'Session Records', icon: Calendar }
         ].map(tab => {
@@ -1051,86 +1053,6 @@ export const PostureScreen: React.FC = () => {
           recentSessions={unifiedSessionsWithLive}
           userProfile={user ? { age: user.age, height: user.height, weight: user.weight, name: user.name } : undefined}
         />
-      )}
-
-
-      {/* 3D ANATOMICAL TWIN TAB */}
-      {activeTab === '3d' && (
-        <div data-tour="spine-3d-model" className="space-y-6">
-          <div className="glass p-6 sm:p-8 rounded-[40px] border border-slate-100 shadow-premium">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-black text-slate-900 tracking-tight flex items-center gap-2">
-                  <Box size={16} className="text-indigo-600" />
-                  Interactive 3D Anatomical Spine Twin
-                </h3>
-                <p className="text-xs text-slate-500 font-medium mt-0.5">
-                  Rotate 360° to inspect cervical, thoracic, and lumbar stress heatmaps in real time.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-black px-3 py-1 rounded-full bg-indigo-50 text-indigo-700">
-                  {Math.round(angle)}° Dynamic Stance
-                </span>
-              </div>
-            </div>
-
-            {/* 3D Spine Component */}
-            <div className="pt-4">
-              <Spine3DModel 
-                avgAngle={angle}
-                slouchIncidents={incidents}
-                stabilityScore={localAI.stabilityScore}
-                showControls={true}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* BIOMECHANICS TAB */}
-      {activeTab === 'biomechanics' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="glass p-6 rounded-[32px] border border-slate-100 shadow-soft space-y-2">
-              <span className="text-xs font-black uppercase tracking-wider text-slate-400">
-                Upper Back Strain
-              </span>
-              <div className="text-3xl font-black text-slate-900">{localAI.upperBackStrainLbs} lbs</div>
-              <p className="text-xs text-slate-500 font-medium">{localAI.loadClassification} tensile load</p>
-            </div>
-
-            <div className="glass p-6 rounded-[32px] border border-slate-100 shadow-soft space-y-2">
-              <span className="text-xs font-black uppercase tracking-wider text-slate-400">
-                Fatigue Score
-              </span>
-              <div className="text-3xl font-black text-slate-900">{localAI.fatigueScore}%</div>
-              <p className="text-xs text-slate-500 font-medium">{localAI.fatigueTrend} accumulation</p>
-            </div>
-
-            <div className="glass p-6 rounded-[32px] border border-slate-100 shadow-soft space-y-2">
-              <span className="text-xs font-black uppercase tracking-wider text-slate-400">
-                Cumulative Load
-              </span>
-              <div className="text-3xl font-black text-slate-900">{localAI.cumulativeDailyLoadKgh} kg·h</div>
-              <p className="text-xs text-slate-500 font-medium">Gravitational torque on spine</p>
-            </div>
-          </div>
-
-          <div className="glass p-7 rounded-[40px] border border-slate-100 shadow-premium space-y-4">
-            <h3 className="text-base font-black text-slate-900 tracking-tight flex items-center gap-2">
-              <BrainCircuit size={16} className="text-indigo-600" />
-              Clinical Recommendations & Ergonomic Plan
-            </h3>
-            <p className="text-xs text-slate-600 leading-relaxed font-medium">
-              {localAI.dailyRecommendation}
-            </p>
-            <div className="p-4 rounded-2xl bg-indigo-50/70 border border-indigo-100 text-xs font-medium text-indigo-900">
-              <strong>Break Recommendation:</strong> {localAI.breakRecommendationMessage}
-            </div>
-          </div>
-        </div>
       )}
 
       {/* POSTURE EXERCISES & DRILLS TAB */}

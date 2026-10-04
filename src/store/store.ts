@@ -776,6 +776,9 @@ export interface Appointment {
   consultationType: string;
   notes?: string;
   meetingUrl?: string;
+  scheduledSlot?: string;
+  sessionDuration?: number;
+  breakDuration?: number;
   cancellationReason?: string;
   
   // Advance Payment & Consultation Workspace
@@ -978,6 +981,62 @@ const appointmentsSlice = createSlice({
   },
 });
 
+// Call Slice for In-App Video Consultations & Floating Mini-Player
+export interface ActiveCallState {
+  isActive: boolean;
+  isMinimized: boolean;
+  appointment: Appointment | null;
+  callStartedAt: string | null;
+  isMicMuted: boolean;
+  isCameraOff: boolean;
+  showTelemetryHUD: boolean;
+}
+
+const callSlice = createSlice({
+  name: 'call',
+  initialState: {
+    isActive: false,
+    isMinimized: false,
+    appointment: null,
+    callStartedAt: null,
+    isMicMuted: false,
+    isCameraOff: false,
+    showTelemetryHUD: true,
+  } as ActiveCallState,
+  reducers: {
+    startCall: (state, action: PayloadAction<Appointment>) => {
+      state.isActive = true;
+      state.isMinimized = false;
+      state.appointment = action.payload;
+      state.callStartedAt = new Date().toISOString();
+      state.isMicMuted = false;
+      state.isCameraOff = false;
+      state.showTelemetryHUD = true;
+    },
+    minimizeCall: (state) => {
+      state.isMinimized = true;
+    },
+    maximizeCall: (state) => {
+      state.isMinimized = false;
+    },
+    toggleCallMic: (state) => {
+      state.isMicMuted = !state.isMicMuted;
+    },
+    toggleCallCamera: (state) => {
+      state.isCameraOff = !state.isCameraOff;
+    },
+    toggleCallTelemetry: (state) => {
+      state.showTelemetryHUD = !state.showTelemetryHUD;
+    },
+    endCall: (state) => {
+      state.isActive = false;
+      state.isMinimized = false;
+      state.appointment = null;
+      state.callStartedAt = null;
+    }
+  }
+});
+
 // Sync Slice
 interface SyncAction {
   id: string;
@@ -1020,6 +1079,26 @@ export const { setDeviceStatus, setHasPaired, setSkippedSetup, updateBattery, un
 export const { addAppointment, removeAppointment, updateAppointment, setAppointmentStatus, rescheduleAppointment, cancelAppointment, approveAppointment, payAdvanceFee, addChatMessage, shareReportWithDoctor } = appointmentsSlice.actions;
 export const { setOnlineStatus, addToSyncQueue, removeFromSyncQueue, clearSyncQueue } = syncSlice.actions;
 export const { updateVitals, setVitalsStatus, setServerSynced, clearVitalsHistory } = vitalsSlice.actions;
+export const { startCall, minimizeCall, maximizeCall, toggleCallMic, toggleCallCamera, toggleCallTelemetry, endCall } = callSlice.actions;
+
+import fallDetectionReducer, * as fallDetectionSliceActions from './fallDetectionSlice';
+
+export const {
+  setFallDetectionEnabled,
+  setCountdownDuration,
+  setSensitivity,
+  addEmergencyContact,
+  updateEmergencyContact,
+  removeEmergencyContact,
+  triggerFallAlert,
+  decrementCountdown,
+  resolveFallAlert,
+  setFallEmergencyCoords,
+  updateFallIncidentStatus,
+  clearFallHistory
+} = fallDetectionSliceActions;
+
+export type { EmergencyContact, FallIncidentRecord, ActiveFallAlert } from './fallDetectionSlice';
 
 const appReducer = combineReducers({
   auth: authSlice.reducer,
@@ -1029,6 +1108,8 @@ const appReducer = combineReducers({
   vitals: vitalsSlice.reducer,
   appointments: appointmentsSlice.reducer,
   sync: syncSlice.reducer,
+  fallDetection: fallDetectionReducer,
+  call: callSlice.reducer,
 });
 
 const rootReducer = (state: any, action: any) => {
@@ -1042,7 +1123,7 @@ const persistConfig = {
   key: 'root',
   version: 1,
   storage,
-  whitelist: ['auth', 'ui', 'posture', 'appointments', 'sync', 'device', 'vitals'], // Persist these including auth state
+  whitelist: ['auth', 'ui', 'posture', 'appointments', 'sync', 'device', 'vitals', 'fallDetection'], // Persist these including auth state
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);

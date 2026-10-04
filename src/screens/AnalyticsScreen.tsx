@@ -41,7 +41,9 @@ export const AnalyticsScreen: React.FC = () => {
     goodSessionSeconds,
     totalSessionSeconds,
     isRecordingSession,
-    isSimulating
+    isSimulating,
+    angle,
+    baselineAngle
   } = useSelector((state: RootState) => state.posture);
   const device = useSelector((state: RootState) => state.device);
   const user = useSelector((state: RootState) => state.auth.user);
@@ -74,8 +76,16 @@ export const AnalyticsScreen: React.FC = () => {
   const [activeTrendMetric, setActiveTrendMetric] = useState<'health' | 'load' | 'fatigue' | 'recovery'>('health');
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
 
-  // Retrieve current computed metrics from our Local AI Biomechanical Engine
-  const localMetrics = LocalModelService.getMetrics();
+  // Retrieve current computed metrics from our Local AI Biomechanical Engine (Live & Responsive)
+  const localMetrics = LocalModelService.recalculateAllBiomechanicalMetrics(
+    angle,
+    baselineAngle,
+    history,
+    goodSessionSeconds,
+    totalSessionSeconds,
+    incidents,
+    user ? { age: user.age, height: user.height, weight: user.weight } : undefined
+  );
   const c = localMetrics.slouchConcentration;
   const totalPatterns = c.morningSlouches + c.afternoonSlouches + c.eveningSlouches + c.nightSlouches;
   const dp = localMetrics.digitalProfile;

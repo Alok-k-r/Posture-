@@ -294,11 +294,10 @@ export class ImuTelemetryFilter {
   private static sampleCount: number = 0;
   private static rollingVarianceWindow: number[] = [];
 
-  // Default nominal complementary filter weight (0.95 = 95% gyro prediction, 5% accelerometer correction)
-  private static readonly NOMINAL_ALPHA = 0.94;
-  private static readonly TRANSIENT_ALPHA = 0.985;
-  private static readonly MAX_SLEW_RATE_DEG_PER_SEC = 120.0; // Max physiological neck movement speed
-  private static readonly JITTER_DEADBAND_DEG = 0.15; // Threshold below which changes are treated as sensor noise
+  // Low-pass filter smoothing: responsive tracking without resonance
+  private static readonly NOMINAL_ALPHA = 0.35;
+  private static readonly MAX_SLEW_RATE_DEG_PER_SEC = 180.0; // Max physiological neck/spine movement speed
+  private static readonly JITTER_DEADBAND_DEG = 0.2; // Threshold below which changes are treated as sensor noise
 
   /**
    * Processes an incoming raw angle measurement (from BLE or simulator).
@@ -307,8 +306,17 @@ export class ImuTelemetryFilter {
   public static processSample(rawAngle: number, timestampMs: number = Date.now()): number {
     if (isNaN(rawAngle)) return Math.max(0, Math.min(90, Math.round(this.filteredAngle)));
 
+    // Resilient posture angle mapping:
+    // Some IMU sensors transmit forward tilt angle (0° = vertical upright, 20° = forward slouch)
+    // while others transmit vertical spinal angle (90° = vertical upright, 70° = forward slouch).
+    let normalizedAngle = rawAngle;
+    if (normalizedAngle >= -45 && normalizedAngle <= 45) {
+      // Convert tilt deviation to standard 0-90° upright scale
+      normalizedAngle = 90 - Math.abs(normalizedAngle);
+    }
+
     // Strictly clamp input to physiological spinal angle range [0°, 90°]
-    const clampedRaw = Math.max(0, Math.min(90, Math.round(rawAngle)));
+    const clampedRaw = Math.max(0, Math.min(90, Math.round(normalizedAngle)));
 
     if (!this.initialized) {
       this.filteredAngle = clampedRaw;
@@ -324,37 +332,28 @@ export class ImuTelemetryFilter {
     this.lastTimestamp = timestampMs;
     this.sampleCount++;
 
-    // Calculate raw delta and raw velocity
+    // Calculate true angular velocity
     const rawDelta = clampedRaw - this.prevRawAngle;
-    const rawVelocity = rawDelta / dtSec;
+    this.angularVelocityDegPerSec = rawDelta / dtSec;
+    this.prevRawAngle = clampedRaw;
 
-    // Check for transient artifact / shock (e.g. foot stomp, pod tap, quick chair shift)
-    const isTransientShock = Math.abs(rawVelocity) > this.MAX_SLEW_RATE_DEG_PER_SEC;
-    if (isTransientShock) {
-      this.rejectionCount++;
+    const currentDelta = clampedRaw - this.filteredAngle;
+
+    // Deadband check: if change is within jitter noise floor, retain current stable angle
+    if (Math.abs(currentDelta) < this.JITTER_DEADBAND_DEG) {
+      return Math.max(0, Math.min(90, Math.round(this.filteredAngle)));
     }
 
-    // Adaptive alpha tuning:
-    // When transient shock occurs, heavily weight previous estimate to reject the spike
-    let alpha = isTransientShock ? this.TRANSIENT_ALPHA : this.NOMINAL_ALPHA;
+    // Rate-limit max physical slew rate to prevent teleporting artifacts
+    const maxDelta = this.MAX_SLEW_RATE_DEG_PER_SEC * dtSec;
+    const rateLimitedDelta = Math.max(-maxDelta, Math.min(maxDelta, currentDelta));
 
-    // Deadband check: if change is smaller than jitter noise floor, increase smoothing
-    if (Math.abs(clampedRaw - this.filteredAngle) < this.JITTER_DEADBAND_DEG) {
-      alpha = 0.98;
-    }
+    // Adaptive Exponential Filter: Fast tracking for deliberate movements, smooth for steady holds
+    const dynamicAlpha = Math.abs(currentDelta) > 4 ? 0.15 : this.NOMINAL_ALPHA;
+    const newFiltered = (dynamicAlpha * this.filteredAngle) + ((1 - dynamicAlpha) * (this.filteredAngle + rateLimitedDelta));
 
-    // Complementary Filter Fusion:
-    // Predicted orientation using smoothed angular velocity:
-    const predictedAngle = this.filteredAngle + (this.angularVelocityDegPerSec * dtSec);
-    
-    // Fuse prediction with new sensor measurement:
-    const newFiltered = (alpha * predictedAngle) + ((1 - alpha) * clampedRaw);
-
-    // Update angular velocity (derivative of filtered state)
-    this.angularVelocityDegPerSec = (newFiltered - this.filteredAngle) / dtSec;
     this.prevFilteredAngle = this.filteredAngle;
     this.filteredAngle = newFiltered;
-    this.prevRawAngle = clampedRaw;
 
     // Update rolling variance for signal quality diagnostics
     const residual = Math.abs(clampedRaw - newFiltered);

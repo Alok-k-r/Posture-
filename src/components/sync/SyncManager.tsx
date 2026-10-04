@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { RootState, setOnlineStatus, removeFromSyncQueue, updateAngle, setThresholds, setHasPaired, setDeviceStatus, updateBattery, setPostureHistory, setIsRecordingSession, updateUser } from '../../store/store';
+import { bluetoothService } from '../../services/bluetoothService';
 import { Wifi, WifiOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, auth, rtdb } from '../../lib/firebase';
@@ -11,6 +12,7 @@ export const SyncManager: React.FC = () => {
   const dispatch = useDispatch();
   const { isOnline, syncQueue } = useSelector((state: RootState) => state.sync);
   const { isSimulating, angle, isRecordingSession, autoRecordEnabled } = useSelector((state: RootState) => state.posture);
+  const isDeviceConnected = useSelector((state: RootState) => state.device.isConnected);
   const user = useSelector((state: RootState) => state.auth.user);
 
   // References to keep latest values inside asynchronous sockets
@@ -25,9 +27,7 @@ export const SyncManager: React.FC = () => {
     isRecordingRef.current = isRecordingSession;
   }, [isRecordingSession]);
 
-  // 1. Simulation logic has been removed as requested to use only the live Firebase RTDB stream.
-
-  // 2. Connectivity Listeners
+  // 1. Connectivity Listeners
   useEffect(() => {
     const handleOnline = () => dispatch(setOnlineStatus(true));
     const handleOffline = () => dispatch(setOnlineStatus(false));
@@ -41,12 +41,12 @@ export const SyncManager: React.FC = () => {
     };
   }, [dispatch]);
 
-  // 3. Real-time Device & History Listeners (ESP32 Integration - Firebase Realtime Database)
+  // 2. Real-time Device & History Listeners (ESP32 Integration - Firebase Realtime Database)
   useEffect(() => {
     const activeId = user?.id || auth.currentUser?.uid || 'demo-123';
     console.log('📡 Subscribing to real-time physical device streams for ID:', activeId);
 
-    // A. Listen to the current device node on RTDB for live posture & status
+    // A. Listen to the current device node on RTDB for live posture & status (fallback if BLE is not active)
     const currentRef = rtdbRef(rtdb, `devices/${activeId}/current`);
     const unsubscribeDevice = onRtdbValue(currentRef, (snapshot) => {
       if (snapshot.exists()) {
@@ -54,6 +54,11 @@ export const SyncManager: React.FC = () => {
         
         // Auto-configure paired state
         dispatch(setHasPaired(true));
+
+        // If Web Bluetooth hardware is actively connected, BLE has direct priority
+        if (bluetoothService.isConnected()) {
+          return;
+        }
 
         // Only mark online if data was updated within the last 15 seconds
         if (data.updatedAt && (Date.now() - new Date(data.updatedAt).getTime() < 15000)) {
@@ -99,14 +104,6 @@ export const SyncManager: React.FC = () => {
           }
           return b.id.localeCompare(a.id); // Lexicographical sort
         });
-
-        const latest = list[0];
-        if (latest && typeof latest.angle === 'number') {
-          dispatch(updateAngle(latest.angle));
-        }
-        if (latest && (typeof latest.batteryLevel === 'number' || typeof latest.battery === 'number')) {
-          dispatch(updateBattery(latest.batteryLevel ?? latest.battery));
-        }
 
         const angles = list
           .map(d => d.angle)

@@ -10,7 +10,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { 
   RootState, addAppointment, removeAppointment, addToSyncQueue, 
   setAppointmentStatus, rescheduleAppointment, cancelAppointment,
-  approveAppointment, payAdvanceFee,
+  approveAppointment, payAdvanceFee, startCall,
   Appointment, AppointmentStatus, ConsultationMode 
 } from '../store/store';
 import { cn } from '../lib/utils';
@@ -18,6 +18,7 @@ import { format } from 'date-fns';
 import toast from 'react-hot-toast';
 import { AdvancePaymentModal } from '../components/appointments/AdvancePaymentModal';
 import { ConsultationWorkspaceModal } from '../components/appointments/ConsultationWorkspaceModal';
+import { ScheduleService, generateMeetingLink, VirtualSlot, InClinicSlot } from '../services/scheduleService';
 
 const SPECIALISTS = [
   { 
@@ -120,13 +121,15 @@ export const AppointmentsScreen: React.FC = () => {
   const [consultationMode, setConsultationMode] = useState<ConsultationMode>('In-Clinic');
   const [consultationType, setConsultationType] = useState<string>('Postural Assessment');
   const [bookingDate, setBookingDate] = useState(format(new Date(Date.now() + 86400000), 'yyyy-MM-dd'));
-  const [bookingTime, setBookingTime] = useState('10:30 AM');
+  const [bookingTime, setBookingTime] = useState('09:40 AM');
+  const [bookingSlotLabel, setBookingSlotLabel] = useState('09:40 AM - 10:10 AM');
   const [patientNotes, setPatientNotes] = useState('');
   const [paymentOption, setPaymentOption] = useState<'pay_later' | 'pay_now'>('pay_later');
 
   // Reschedule Form States
   const [rescheduleDate, setRescheduleDate] = useState(format(new Date(Date.now() + 86400000 * 2), 'yyyy-MM-dd'));
-  const [rescheduleTime, setRescheduleTime] = useState('11:00 AM');
+  const [rescheduleTime, setRescheduleTime] = useState('09:40 AM');
+  const [rescheduleSlotLabel, setRescheduleSlotLabel] = useState('09:40 AM - 10:10 AM');
 
   // Cancel Form States
   const [cancelReason, setCancelReason] = useState('Schedule conflict');
@@ -182,6 +185,28 @@ export const AppointmentsScreen: React.FC = () => {
       });
   }, [appointments, search, selectedModeFilter, activeTab]);
 
+  // Dynamic available slots for Booking Modal
+  const bookingVirtualSlots = useMemo(() => {
+    return ScheduleService.getVirtualSlots(selectedDoc?.name || '', bookingDate, appointments);
+  }, [selectedDoc?.name, bookingDate, appointments]);
+
+  const bookingClinicSlots = useMemo(() => {
+    return ScheduleService.getInClinicSlots(selectedDoc?.name || '', bookingDate, appointments);
+  }, [selectedDoc?.name, bookingDate, appointments]);
+
+  // Dynamic available slots for Reschedule Modal
+  const rescheduleVirtualSlots = useMemo(() => {
+    if (!rescheduleItem) return [];
+    const others = appointments.filter(a => a.id !== rescheduleItem.id);
+    return ScheduleService.getVirtualSlots(rescheduleItem.doctorName, rescheduleDate, others);
+  }, [rescheduleItem, rescheduleDate, appointments]);
+
+  const rescheduleClinicSlots = useMemo(() => {
+    if (!rescheduleItem) return [];
+    const others = appointments.filter(a => a.id !== rescheduleItem.id);
+    return ScheduleService.getInClinicSlots(rescheduleItem.doctorName, rescheduleDate, others);
+  }, [rescheduleItem, rescheduleDate, appointments]);
+
   // Handle Booking Submit
   const handleBookingSubmit = () => {
     if (!selectedDoc) {
@@ -189,8 +214,9 @@ export const AppointmentsScreen: React.FC = () => {
       return;
     }
 
-    const meetingLink = consultationMode === 'Video Call' 
-      ? `https://meet.google.com/ais-posture-${Math.random().toString(36).substring(2, 7)}`
+    const isVideo = consultationMode === 'Video Call';
+    const meetingLink = isVideo 
+      ? generateMeetingLink(selectedDoc.name, bookingDate, bookingTime)
       : undefined;
 
     const newAppointment: Appointment = {
@@ -206,7 +232,10 @@ export const AppointmentsScreen: React.FC = () => {
       mode: consultationMode,
       consultationType: consultationType,
       notes: patientNotes.trim() || '',
-      meetingUrl: meetingLink || ''
+      meetingUrl: meetingLink || '',
+      scheduledSlot: isVideo ? bookingSlotLabel : `${bookingTime} (Clinic Slot)`,
+      sessionDuration: isVideo ? 30 : 45,
+      breakDuration: isVideo ? 10 : 15
     };
 
     dispatch(addAppointment(newAppointment));
@@ -217,7 +246,11 @@ export const AppointmentsScreen: React.FC = () => {
       timestamp: new Date().toISOString()
     }));
 
-    toast.success('Appointment request submitted successfully!');
+    toast.success(
+      isVideo
+        ? `Virtual Consultation scheduled at ${bookingSlotLabel}! Google Meet link generated.`
+        : `In-Clinic appointment requested for ${bookingDate} at ${bookingTime}!`
+    );
     setShowBookingModal(false);
     resetBookingForm();
     setActiveTab('Pending');
@@ -230,7 +263,8 @@ export const AppointmentsScreen: React.FC = () => {
     setConsultationMode('In-Clinic');
     setConsultationType('Postural Assessment');
     setBookingDate(format(new Date(Date.now() + 86400000), 'yyyy-MM-dd'));
-    setBookingTime('10:30 AM');
+    setBookingTime('09:40 AM');
+    setBookingSlotLabel('09:40 AM - 10:10 AM');
     setPatientNotes('');
     setPaymentOption('pay_later');
   };
@@ -238,6 +272,11 @@ export const AppointmentsScreen: React.FC = () => {
   // Handle Reschedule Confirm
   const handleConfirmReschedule = () => {
     if (!rescheduleItem) return;
+
+    const isVideo = rescheduleItem.mode === 'Video Call';
+    const updatedMeetingLink = isVideo 
+      ? generateMeetingLink(rescheduleItem.doctorName, rescheduleDate, rescheduleTime)
+      : rescheduleItem.meetingUrl;
 
     dispatch(rescheduleAppointment({
       id: rescheduleItem.id,
@@ -248,7 +287,13 @@ export const AppointmentsScreen: React.FC = () => {
     dispatch(addToSyncQueue({
       id: `reschedule_${rescheduleItem.id}_${Date.now()}`,
       type: 'SYNC_APPOINTMENT',
-      payload: { ...rescheduleItem, date: rescheduleDate, time: rescheduleTime },
+      payload: { 
+        ...rescheduleItem, 
+        date: rescheduleDate, 
+        time: rescheduleTime,
+        scheduledSlot: isVideo ? rescheduleSlotLabel : rescheduleTime,
+        meetingUrl: updatedMeetingLink
+      },
       timestamp: new Date().toISOString()
     }));
 
@@ -602,16 +647,13 @@ export const AppointmentsScreen: React.FC = () => {
 
                     {/* Join Virtual Call Button if Upcoming & Video Call */}
                     {app.status === 'upcoming' && app.mode === 'Video Call' && (
-                      <a
-                        href={app.meetingUrl || '#'}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-black uppercase tracking-wider transition-colors"
+                      <button
+                        onClick={() => dispatch(startCall(app))}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-black uppercase tracking-wider transition-all shadow-sm active:scale-95 cursor-pointer"
                       >
                         <Video size={12} />
-                        Join Call
-                        <ExternalLink size={10} />
-                      </a>
+                        <span>Join Call (In-App)</span>
+                      </button>
                     )}
 
                     {/* Reschedule Button if pending, approved, or upcoming */}
@@ -856,34 +898,154 @@ export const AppointmentsScreen: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Step 3: Date & Time Slot */}
-                <div className="space-y-3">
-                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block">3. Select Schedule</label>
+                {/* Step 3: Date & Available Slots */}
+                <div className="space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-black uppercase tracking-wider text-slate-700 block">
+                      3. Select Date & Available Slot
+                    </label>
+                    {consultationMode === 'Video Call' ? (
+                      <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
+                        <Video size={10} />
+                        30m Video • 10m Buffer
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        In-Person OPD
+                      </span>
+                    )}
+                  </div>
                   
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Consultation Date</label>
-                      <input 
-                        type="date"
-                        min={format(new Date(), 'yyyy-MM-dd')}
-                        value={bookingDate}
-                        onChange={(e) => setBookingDate(e.target.value)}
-                        className="w-full bg-slate-50 rounded-2xl p-3 text-xs font-bold text-slate-800 border border-slate-200/80 focus:outline-none"
-                      />
+                  {/* Date Input */}
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Consultation Date</label>
+                    <input 
+                      type="date"
+                      min={format(new Date(), 'yyyy-MM-dd')}
+                      value={bookingDate}
+                      onChange={(e) => setBookingDate(e.target.value)}
+                      className="w-full bg-slate-50 rounded-2xl p-3 text-xs font-bold text-slate-800 border border-slate-200/80 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
+
+                  {/* Available Slot Picker */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                        Available Slots for {selectedDoc?.name || 'Selected Doctor'}
+                      </span>
+                      <span className="text-[9px] font-bold text-slate-400">
+                        {consultationMode === 'Video Call' 
+                          ? `${bookingVirtualSlots.filter(s => !s.isBooked && !s.isPast).length} open slots`
+                          : `${bookingClinicSlots.filter(s => !s.isBooked && !s.isPast).length} open slots`}
+                      </span>
                     </div>
 
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Time Slot</label>
-                      <select
-                        value={bookingTime}
-                        onChange={(e) => setBookingTime(e.target.value)}
-                        className="w-full bg-slate-50 rounded-2xl p-3 text-xs font-bold text-slate-800 border border-slate-200/80 focus:outline-none"
-                      >
-                        {TIME_SLOTS.map(slot => (
-                          <option key={slot} value={slot}>{slot}</option>
-                        ))}
-                      </select>
-                    </div>
+                    {consultationMode === 'Video Call' ? (
+                      /* Virtual Consultation Sequential 30-min Slot Grid */
+                      <div className="space-y-2.5">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto pr-1 no-scrollbar">
+                          {bookingVirtualSlots.map((slot) => {
+                            const isSelected = bookingTime === slot.start;
+                            const isUnavailable = slot.isBooked || slot.isPast;
+
+                            return (
+                              <button
+                                key={slot.id}
+                                type="button"
+                                disabled={isUnavailable}
+                                onClick={() => {
+                                  setBookingTime(slot.start);
+                                  setBookingSlotLabel(slot.label);
+                                }}
+                                className={cn(
+                                  "p-2.5 rounded-2xl border text-left transition-all flex flex-col justify-between gap-1",
+                                  isSelected
+                                    ? "bg-indigo-600 text-white border-indigo-600 shadow-md ring-2 ring-indigo-200"
+                                    : isUnavailable
+                                    ? "bg-slate-100/70 border-slate-200 text-slate-400 opacity-60 cursor-not-allowed"
+                                    : "bg-white hover:bg-indigo-50/50 border-slate-200/80 text-slate-800 cursor-pointer"
+                                )}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className={cn("text-xs font-black", isSelected ? "text-white" : "text-slate-900")}>
+                                    {slot.start}
+                                  </span>
+                                  {isUnavailable ? (
+                                    <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">
+                                      {slot.isPast ? 'Passed' : 'Booked'}
+                                    </span>
+                                  ) : (
+                                    <span className={cn(
+                                      "text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full",
+                                      isSelected ? "bg-white/20 text-white" : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                    )}>
+                                      Open
+                                    </span>
+                                  )}
+                                </div>
+                                <span className={cn("text-[9px] font-medium", isSelected ? "text-indigo-100" : "text-slate-400")}>
+                                  until {slot.end} (30m)
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Doctor Series Break Visualizer */}
+                        <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[10px] text-slate-600 flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-1 font-bold text-slate-700">
+                            <Clock size={12} className="text-indigo-600" />
+                            Doctor Workflow:
+                          </span>
+                          <span className="font-medium text-slate-500 text-[9.5px]">
+                            30-min Video Consultation ➔ 10-min Doctor Break ➔ Next Scheduled Patient
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      /* In-Clinic Slot Grid */
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-h-40 overflow-y-auto pr-1 no-scrollbar">
+                        {bookingClinicSlots.map((slot) => {
+                          const isSelected = bookingTime === slot.time;
+                          const isUnavailable = slot.isBooked || slot.isPast;
+
+                          return (
+                            <button
+                              key={slot.id}
+                              type="button"
+                              disabled={isUnavailable}
+                              onClick={() => {
+                                setBookingTime(slot.time);
+                                setBookingSlotLabel(`${slot.time} (In-Clinic)`);
+                              }}
+                              className={cn(
+                                "p-2.5 rounded-2xl border text-center transition-all flex flex-col items-center justify-center gap-1",
+                                isSelected
+                                  ? "bg-emerald-600 text-white border-emerald-600 shadow-md ring-2 ring-emerald-200"
+                                  : isUnavailable
+                                  ? "bg-slate-100/70 border-slate-200 text-slate-400 opacity-60 cursor-not-allowed"
+                                  : "bg-white hover:bg-emerald-50/50 border-slate-200/80 text-slate-800 cursor-pointer"
+                              )}
+                            >
+                              <span className={cn("text-xs font-black", isSelected ? "text-white" : "text-slate-900")}>
+                                {slot.time}
+                              </span>
+                              <span className={cn(
+                                "text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full",
+                                isSelected 
+                                  ? "bg-white/20 text-white" 
+                                  : isUnavailable 
+                                  ? "bg-slate-200 text-slate-500" 
+                                  : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                              )}>
+                                {isUnavailable ? (slot.isPast ? 'Passed' : 'Booked') : 'Available'}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -998,6 +1160,43 @@ export const AppointmentsScreen: React.FC = () => {
                   </span>
                 </div>
 
+                {selectedAppointmentDetails.mode === 'Video Call' && (
+                  <div className="py-2.5 px-3.5 bg-indigo-50/80 rounded-2xl border border-indigo-100 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-black text-indigo-900 uppercase tracking-wider flex items-center gap-1.5">
+                        <Video size={14} className="text-indigo-600" />
+                        Virtual Consultation Room
+                      </span>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                        30m Call + 10m Buffer
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-slate-600 leading-relaxed font-medium">
+                      Google Meet room link is active. Both patient and doctor can join at the scheduled time:
+                    </p>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        readOnly
+                        value={selectedAppointmentDetails.meetingUrl || generateMeetingLink(selectedAppointmentDetails.doctorName, selectedAppointmentDetails.date, selectedAppointmentDetails.time)}
+                        className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-[11px] text-slate-700 font-mono select-all"
+                      />
+                      <button
+                        onClick={() => {
+                          const target = selectedAppointmentDetails;
+                          setSelectedAppointmentDetails(null);
+                          dispatch(startCall(target));
+                        }}
+                        className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95"
+                      >
+                        <Video size={13} />
+                        <span>Join In-App</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex justify-between items-center py-2 border-b border-slate-100">
                   <span className="text-slate-500 font-medium">Fee</span>
                   <span className="font-black text-slate-900 text-sm">{selectedAppointmentDetails.fee}</span>
@@ -1074,16 +1273,75 @@ export const AppointmentsScreen: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">New Time Slot</label>
-                  <select
-                    value={rescheduleTime}
-                    onChange={(e) => setRescheduleTime(e.target.value)}
-                    className="w-full bg-slate-50 rounded-2xl p-3 text-xs font-bold text-slate-800 border border-slate-200"
-                  >
-                    {TIME_SLOTS.map(slot => (
-                      <option key={slot} value={slot}>{slot}</option>
-                    ))}
-                  </select>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                    Select Available Slot ({rescheduleItem.mode === 'Video Call' ? '30m Series' : 'In-Clinic'})
+                  </label>
+                  
+                  {rescheduleItem.mode === 'Video Call' ? (
+                    <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1 no-scrollbar">
+                      {rescheduleVirtualSlots.map((slot) => {
+                        const isSelected = rescheduleTime === slot.start;
+                        const isUnavailable = slot.isBooked || slot.isPast;
+
+                        return (
+                          <button
+                            key={slot.id}
+                            type="button"
+                            disabled={isUnavailable}
+                            onClick={() => {
+                              setRescheduleTime(slot.start);
+                              setRescheduleSlotLabel(slot.label);
+                            }}
+                            className={cn(
+                              "p-2 rounded-xl border text-left text-xs transition-all",
+                              isSelected
+                                ? "bg-indigo-600 text-white border-indigo-600 shadow-sm font-bold"
+                                : isUnavailable
+                                ? "bg-slate-100 text-slate-400 opacity-50 cursor-not-allowed"
+                                : "bg-white hover:bg-indigo-50/50 border-slate-200 text-slate-800 cursor-pointer font-medium"
+                            )}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span>{slot.start}</span>
+                              <span className="text-[8px] font-bold uppercase">
+                                {isUnavailable ? (slot.isPast ? 'Passed' : 'Booked') : 'Open'}
+                              </span>
+                            </div>
+                            <span className="text-[9px] opacity-75 block">until {slot.end}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto pr-1 no-scrollbar">
+                      {rescheduleClinicSlots.map((slot) => {
+                        const isSelected = rescheduleTime === slot.time;
+                        const isUnavailable = slot.isBooked || slot.isPast;
+
+                        return (
+                          <button
+                            key={slot.id}
+                            type="button"
+                            disabled={isUnavailable}
+                            onClick={() => {
+                              setRescheduleTime(slot.time);
+                              setRescheduleSlotLabel(`${slot.time} (In-Clinic)`);
+                            }}
+                            className={cn(
+                              "p-2 rounded-xl border text-center text-xs transition-all",
+                              isSelected
+                                ? "bg-emerald-600 text-white border-emerald-600 shadow-sm font-bold"
+                                : isUnavailable
+                                ? "bg-slate-100 text-slate-400 opacity-50 cursor-not-allowed"
+                                : "bg-white hover:bg-emerald-50/50 border-slate-200 text-slate-800 cursor-pointer font-medium"
+                            )}
+                          >
+                            <span>{slot.time}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 

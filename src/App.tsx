@@ -15,6 +15,9 @@ import { doc, getDoc, collection, query, where, getDocs, setDoc, serverTimestamp
 import { Layout } from './components/layout/Layout';
 import { SyncManager } from './components/sync/SyncManager';
 import { SlouchAlarmManager } from './components/posture/SlouchAlarmManager';
+import { FallDetectionModal } from './components/modals/FallDetectionModal';
+import { InAppVideoConsultationModal } from './components/appointments/InAppVideoConsultationModal';
+import { FloatingCallMiniPlayer } from './components/appointments/FloatingCallMiniPlayer';
 import { LoginScreen } from './screens/LoginScreen';
 import { DashboardScreen } from './screens/DashboardScreen';
 import { PostureScreen } from './screens/PostureScreen';
@@ -26,6 +29,7 @@ import { ThresholdScreen } from './screens/ThresholdScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
 import { DeviceScreen } from './screens/DeviceScreen';
 import { DeviceSetupScreen } from './screens/DeviceSetupScreen';
+import { FallDetectionScreen } from './screens/FallDetectionScreen';
 import { TermsAcceptanceScreen } from './screens/TermsAcceptanceScreen';
 
 // Guard for protected routes
@@ -268,6 +272,9 @@ function AppContent() {
       <Toaster position="top-center" />
       <SyncManager />
       <SlouchAlarmManager />
+      <FallDetectionModal />
+      <InAppVideoConsultationModal />
+      <FloatingCallMiniPlayer />
       <Layout>
         <Routes>
           <Route path="/login" element={<LoginScreen />} />
@@ -277,6 +284,7 @@ function AppContent() {
           <Route path="/appointments" element={<AuthGuard><AppointmentsScreen /></AuthGuard>} />
           <Route path="/analytics" element={<AuthGuard><AnalyticsScreen /></AuthGuard>} />
           <Route path="/more" element={<AuthGuard><MoreScreen /></AuthGuard>} />
+          <Route path="/fall-detection" element={<AuthGuard><FallDetectionScreen /></AuthGuard>} />
           <Route path="/reports" element={<AuthGuard><ReportsScreen /></AuthGuard>} />
           <Route path="/thresholds" element={<AuthGuard><ThresholdScreen /></AuthGuard>} />
           <Route path="/profile" element={<AuthGuard><ProfileScreen /></AuthGuard>} />

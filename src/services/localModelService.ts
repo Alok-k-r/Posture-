@@ -209,11 +209,13 @@ export class LocalModelService {
   private static cachedMetadata: PersonalModelMetadata | null = null;
   private static isDbLoading: boolean = false;
   private static lastTrainedMinute: number = -1;
+  private static sessionPeakLoadTracker: number = 0;
 
   public static clearCache(): void {
     this.cachedMetadata = null;
     this.isDbLoading = false;
     this.lastTrainedMinute = -1;
+    this.sessionPeakLoadTracker = 0;
   }
 
   /**
@@ -658,10 +660,30 @@ export class LocalModelService {
       const continuousStressMinutes = Math.round((stressSeconds / 60) * 10) / 10;
 
       // Peak & Average loads
-      const peakLoad = Math.max(activeStrain, ...safeHistory.map(a => this.calculateUpperBackStrain(a, safeBaseline, height, weight)));
+      if (safeTotalSec <= 0) {
+        this.sessionPeakLoadTracker = activeStrain;
+      } else {
+        this.sessionPeakLoadTracker = Math.max(
+          this.sessionPeakLoadTracker || activeStrain,
+          activeStrain,
+          ...safeHistory.map(a => this.calculateUpperBackStrain(a, safeBaseline, height, weight))
+        );
+      }
+
+      // If in session, use live tracked peak; otherwise if historical sessions exist, use latest session peak
+      const historyPeak = historicalSessions.length > 0 && historicalSessions[0].peakLoadLbs 
+        ? historicalSessions[0].peakLoadLbs 
+        : activeStrain;
+      const peakLoad = safeTotalSec > 0 
+        ? Math.round(this.sessionPeakLoadTracker * 10) / 10 
+        : (this.sessionPeakLoadTracker > 0 ? Math.round(this.sessionPeakLoadTracker * 10) / 10 : historyPeak);
+
+      const historyAvg = historicalSessions.length > 0 && historicalSessions[0].avgLoadLbs
+        ? historicalSessions[0].avgLoadLbs
+        : activeStrain;
       const avgLoad = safeHistory.length > 0 
         ? Math.round((safeHistory.reduce((sum, a) => sum + this.calculateUpperBackStrain(a, safeBaseline, height, weight), 0) / safeHistory.length) * 10) / 10
-        : activeStrain;
+        : (safeTotalSec > 0 ? activeStrain : historyAvg);
 
       // Cumulative paraspinal dynamic force load
       const cumulativeDailyLoadKgh = Math.round((avgLoad * (safeTotalSec / 3600)) * 100) / 100;

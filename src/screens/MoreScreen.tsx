@@ -2,32 +2,73 @@ import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store/store';
-import { FileText, Sliders, User, Brain, Bell, Shield, Info, ChevronRight, Share2, Wifi, WifiOff, RefreshCw, Cpu } from 'lucide-react';
+import { FileText, Sliders, User, Brain, Bell, Shield, Info, ChevronRight, Share2, Wifi, WifiOff, RefreshCw, Cpu, ShieldAlert } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { TermsOfServiceModal } from '../components/TermsOfServiceModal';
 import { PrivacyPolicyModal } from '../components/PrivacyPolicyModal';
+import toast from 'react-hot-toast';
 
 export const MoreScreen: React.FC = () => {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { isOnline, syncQueue } = useSelector((state: RootState) => state.sync);
   const device = useSelector((state: RootState) => state.device);
+  const fallDetection = useSelector((state: RootState) => state.fallDetection);
   const [isTermsOpen, setIsTermsOpen] = useState(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
+
+  const handleNotificationsClick = async () => {
+    if (!('Notification' in window)) {
+      toast.error('System notifications are not supported in this browser.');
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      toast.success('System push notifications are already enabled!');
+    } else {
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        toast.success('Push notifications successfully enabled!');
+      } else {
+        toast.error('Notification permission was declined.');
+      }
+    }
+  };
+
+  const handleShareWithDoctor = async () => {
+    const shareData = {
+      title: 'PostureCare Health Report',
+      text: 'Here is my PostureCare smart spine and posture telemetry report.',
+      url: window.location.href
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch {}
+    } else {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        toast.success('App link copied to clipboard to share with doctor!');
+      } catch {
+        toast('Ready to export logs from Reports & Export screen.');
+      }
+    }
+  };
 
   const menuItems = [
     { label: 'Device Management', desc: 'Hardware status & battery', path: '/device', icon: Cpu, color: 'text-indigo', bg: 'bg-indigo-10' },
     { label: 'Posture Thresholds', desc: 'Custom calibration & alerts', path: '/thresholds', icon: Sliders, color: 'text-orange', bg: 'bg-orange/10' },
+    { label: 'Fall Detection & SOS', desc: fallDetection?.enabled ? 'Active • 6-axis IMU Kinematics' : 'Paused • Tap to configure', path: '/fall-detection', icon: ShieldAlert, color: 'text-rose-600', bg: 'bg-rose-50' },
     { label: 'Personal Profile', desc: 'Edit your health profile', path: '/profile', icon: User, color: 'text-green', bg: 'bg-green/10' },
     { label: 'Reports & Export', desc: 'View spinal history logs', path: '/reports', icon: FileText, color: 'text-blue', bg: 'bg-blue/10' },
   ];
 
   const secondaryItems = [
-    { label: 'Notifications', icon: Bell },
+    { label: 'Notifications', icon: Bell, onClick: handleNotificationsClick },
     { label: 'Privacy & Security', icon: Shield, onClick: () => setIsPrivacyOpen(true) },
     { label: 'Terms of Service', icon: FileText, onClick: () => setIsTermsOpen(true) },
-    { label: 'About PostureCare', icon: Info },
-    { label: 'Share with Doctor', icon: Share2 },
+    { label: 'About PostureCare', icon: Info, onClick: () => setIsAboutOpen(true) },
+    { label: 'Share with Doctor', icon: Share2, onClick: handleShareWithDoctor },
   ];
 
   return (
@@ -117,6 +158,50 @@ export const MoreScreen: React.FC = () => {
 
       <TermsOfServiceModal isOpen={isTermsOpen} onClose={() => setIsTermsOpen(false)} />
       <PrivacyPolicyModal isOpen={isPrivacyOpen} onClose={() => setIsPrivacyOpen(false)} />
+
+      {/* About Modal */}
+      {isAboutOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl p-6 max-w-md w-full text-left space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                  <Info size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">About PostureCare</h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">v2.4.0 • Build 82</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsAboutOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-300 leading-relaxed">
+              <p>
+                <strong>PostureCare</strong> is an intelligent IoT posture training, kinematic fall detection, and biomechanical health monitoring platform.
+              </p>
+              <div className="p-3 rounded-xl bg-slate-800/80 border border-slate-700 space-y-1 text-[11px]">
+                <div className="flex justify-between"><span className="text-slate-400">Sensor Architecture:</span> <span className="font-bold text-white">ESP32 + LSM6DS3 6-Axis IMU</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">BLE Telemetry:</span> <span className="font-bold text-indigo-400">Web Bluetooth GATT @ 50Hz</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Biomechanical Model:</span> <span className="font-bold text-emerald-400">Hansraj Cervical Load + Markov Chain</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Safety Protocol:</span> <span className="font-bold text-rose-400">3-Phase Kinematic Fall Engine</span></div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setIsAboutOpen(false)}
+              className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

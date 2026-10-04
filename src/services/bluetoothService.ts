@@ -1,10 +1,9 @@
-<<<<<<< HEAD
-import { store, updateAngle, updateBattery, setDeviceStatus, setHasPaired, setIsRecordingSession } from '../store/store';
-=======
-import { store, updateAngle, updateBattery, setDeviceStatus, setHasPaired, updateVitals } from '../store/store';
+import { store, updateAngle, updateBattery, setDeviceStatus, setHasPaired, setIsRecordingSession, setIsSimulating, updateVitals } from '../store/store';
 import { vitalsService } from './vitalsService';
 import { ImuTelemetryFilter } from './biomechanicsEngine';
->>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
+import { fallDetectionService } from './fallDetectionService';
+import { Capacitor } from '@capacitor/core';
+import { BleClient } from '@capacitor-community/bluetooth-le';
 
 // BLE GATT Profile Constants - Aligned with PosturePal ESP32 firmware
 export const POSTURE_SERVICE_UUID = '00001830-0000-1000-8000-00805f9b34fb';
@@ -23,12 +22,19 @@ class BluetoothService {
   private configCharacteristic: any = null;
   private reconnectTimeout: any = null;
   private isConnecting: boolean = false;
+  private isNative: boolean = Capacitor.isNativePlatform();
+  private nativeDeviceId: string | null = null;
+  private isBleClientInitialized: boolean = false;
 
   public isSupported(): boolean {
+    if (this.isNative) return true;
     return typeof navigator !== 'undefined' && ('bluetooth' in navigator || (navigator as any).bluetooth !== undefined);
   }
 
   public isConnected(): boolean {
+    if (this.isNative) {
+      return store.getState().device.isConnected;
+    }
     return !!(this.server && this.server.connected);
   }
 
@@ -36,15 +42,90 @@ class BluetoothService {
     return this.device?.name || 'PosturePal Pod';
   }
 
+  private async ensureNativeBleInitialized() {
+    if (this.isNative && !this.isBleClientInitialized) {
+      try {
+        await BleClient.initialize();
+        this.isBleClientInitialized = true;
+      } catch (err) {
+        console.warn('BleClient initialize error or already initialized:', err);
+      }
+    }
+  }
+
   public async connect(): Promise<boolean> {
     if (!this.isSupported()) {
-      console.warn('Web Bluetooth API is not supported in this environment.');
+      console.warn('Bluetooth API is not supported in this environment.');
       return false;
     }
 
     if (this.isConnecting) return false;
     this.isConnecting = true;
 
+    // --- NATIVE CAPACITOR BLE HANDLER (ANDROID / IOS) ---
+    if (this.isNative) {
+      try {
+        await this.ensureNativeBleInitialized();
+        console.log('Native BLE: Requesting PosturePal device...');
+        const bleDevice = await BleClient.requestDevice({
+          services: [POSTURE_SERVICE_UUID],
+          optionalServices: [POSTURE_SERVICE_UUID, '0000180f-0000-1000-8000-00805f9b34fb']
+        });
+
+        this.nativeDeviceId = bleDevice.deviceId;
+        this.device = bleDevice;
+
+        await BleClient.connect(bleDevice.deviceId, (deviceId) => {
+          console.warn('Native BLE: Device disconnected:', deviceId);
+          this.handleDisconnected();
+        });
+
+        // Start angle notifications natively
+        await BleClient.startNotifications(
+          bleDevice.deviceId,
+          POSTURE_SERVICE_UUID,
+          CHARACTERISTIC_ANGLE_UUID,
+          (value) => {
+            const parsed = this.parseBleAngle(value);
+            if (parsed !== null && !isNaN(parsed)) {
+              const filtered = ImuTelemetryFilter.processSample(parsed);
+              store.dispatch(updateAngle(filtered));
+            }
+          }
+        );
+
+        // Start battery notifications natively
+        try {
+          await BleClient.startNotifications(
+            bleDevice.deviceId,
+            POSTURE_SERVICE_UUID,
+            CHARACTERISTIC_BATT_UUID,
+            (value) => {
+              const batt = this.parseBleBattery(value);
+              if (batt !== null) {
+                store.dispatch(updateBattery(batt));
+              }
+            }
+          );
+        } catch (battErr) {
+          console.warn('Native BLE: Battery notification not available:', battErr);
+        }
+
+        store.dispatch(setIsSimulating(false));
+        store.dispatch(setHasPaired(true));
+        store.dispatch(setDeviceStatus(true));
+        store.dispatch(updateVitals({ status: 'live' }));
+        this.isConnecting = false;
+        console.log('✅ Native Bluetooth Low Energy connected and listening!');
+        return true;
+      } catch (nativeErr) {
+        this.isConnecting = false;
+        console.error('Native BLE connection failed:', nativeErr);
+        throw nativeErr;
+      }
+    }
+
+    // --- WEB BLUETOOTH API HANDLER (DESKTOP & MOBILE BROWSERS) ---
     try {
       console.log('Requesting PosturePal Bluetooth device...');
       const bluetooth = (navigator as any).bluetooth;
@@ -210,9 +291,11 @@ class BluetoothService {
       }
 
       // Successfully paired and connected
+      store.dispatch(setIsSimulating(false));
       store.dispatch(setHasPaired(true));
       store.dispatch(setDeviceStatus(true));
       store.dispatch(updateVitals({ status: 'live' }));
+      ImuTelemetryFilter.reset(store.getState().posture.baselineAngle || 90);
       console.log('✅ Bluetooth Low Energy connected and listening!');
       return true;
     } catch (error) {
@@ -235,8 +318,10 @@ class BluetoothService {
     // A. Check for JSON / text string payload
     try {
       const text = new TextDecoder().decode(view).trim();
-      if (text.startsWith('{')) {
-        const obj = JSON.parse(text);
+      const jsonStart = text.indexOf('{');
+      const jsonEnd = text.lastIndexOf('}');
+      if (jsonStart !== -1 && jsonEnd > jsonStart) {
+        const obj = JSON.parse(text.substring(jsonStart, jsonEnd + 1));
         if (typeof obj.angle === 'number') return obj.angle;
         if (typeof obj.a === 'number') return obj.a;
       }
@@ -345,11 +430,31 @@ class BluetoothService {
 
     try {
       const view = target.value; // DataView
-<<<<<<< HEAD
-      const angle = this.parseBleAngle(view);
-      if (angle !== null && !isNaN(angle)) {
-        store.dispatch(updateAngle(angle));
-        console.log('📡 BLE Received Pitch Angle:', angle, `(bytes: ${view.byteLength})`);
+
+      // Check if this is a 6-axis JSON payload (from the ESP32 code: {"angle":88.4,"ax":0.02,"ay":0.98,"az":0.11,"gx":0.5,"gy":-0.2,"gz":0.1})
+      try {
+        const text = new TextDecoder().decode(view).trim();
+        const jsonStart = text.indexOf('{');
+        const jsonEnd = text.lastIndexOf('}');
+        if (jsonStart !== -1 && jsonEnd > jsonStart) {
+          const jsonStr = text.substring(jsonStart, jsonEnd + 1);
+          const obj = JSON.parse(jsonStr);
+          if (typeof obj.ax === 'number' && typeof obj.ay === 'number' && typeof obj.az === 'number') {
+            const gx = typeof obj.gx === 'number' ? obj.gx : 0;
+            const gy = typeof obj.gy === 'number' ? obj.gy : 0;
+            const gz = typeof obj.gz === 'number' ? obj.gz : 0;
+            const angleVal = typeof obj.angle === 'number' ? obj.angle : 90;
+            fallDetectionService.processSample(obj.ax, obj.ay, obj.az, gx, gy, gz, angleVal);
+          }
+        }
+      } catch {}
+
+      const rawAngle = this.parseBleAngle(view);
+      if (rawAngle !== null && !isNaN(rawAngle)) {
+        // Real-time Complementary / Madgwick filter rejects transient spikes & stabilizes telemetry
+        const filteredAngle = ImuTelemetryFilter.processSample(rawAngle);
+        store.dispatch(updateAngle(filteredAngle));
+        console.log(`📡 BLE Received Pitch: Raw=${rawAngle}°, Filtered=${filteredAngle}° (bytes: ${view.byteLength})`);
 
         // If auto-recording is enabled, activate session on live telemetry
         const state = store.getState();
@@ -359,14 +464,6 @@ class BluetoothService {
       } else {
         console.warn('Could not parse BLE angle packet:', view);
       }
-=======
-      // ESP32 sends 2-byte signed integer (int16_t) little-endian
-      const rawAngle = view.getInt16(0, true);
-      // Tier 2: Real-time Complementary / Madgwick filter rejects transient spikes & stabilizes telemetry
-      const filteredAngle = ImuTelemetryFilter.processSample(rawAngle);
-      store.dispatch(updateAngle(filteredAngle));
-      console.log(`📡 BLE Received Pitch: Raw=${rawAngle}°, Filtered=${filteredAngle}°`);
->>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
     } catch (err) {
       console.warn('Failed to parse angle packet:', err);
     }
@@ -417,9 +514,6 @@ class BluetoothService {
   }
 
   public async triggerCalibration(): Promise<boolean> {
-<<<<<<< HEAD
-    return this.writeConfigPayload({ c: 1 });
-=======
     if (!this.configCharacteristic) {
       console.warn('BLE Config Characteristic is not connected or available for calibration.');
       return false;
@@ -436,7 +530,6 @@ class BluetoothService {
       console.error('Failed to write calibration command to ESP32 over BLE:', err);
       return false;
     }
->>>>>>> 5d76a19d826fbe5aed4eeaf24b43bfc570ddd173
   }
 
   private handleDisconnected = () => {
